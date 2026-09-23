@@ -1,4 +1,4 @@
-"""Filtered Codex completion notifications for Microsoft Teams and Windows.
+"""Filtered Codex completion notifications for Microsoft Teams and local speech.
 
 The script has two entry points:
 
@@ -45,7 +45,10 @@ DEFAULT_QUIET_START = "23:00"
 DEFAULT_QUIET_END = "07:00"
 STALE_MARKER_SECONDS = 48 * 60 * 60
 MAX_TITLE_CHARS = 120
-MAX_SUMMARY_CHARS = 1800
+DEFAULT_SUMMARY_MAX_CHARS = 1800
+DEFAULT_SUMMARY_TAIL_CHARS = 600
+MIN_SUMMARY_MAX_CHARS = 100
+MAX_SUMMARY_MAX_CHARS = 6000
 
 SPANISH_WORDS = {
     "al",
@@ -111,6 +114,29 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1].rstrip() + "…"
+
+
+def _summary_excerpt(value: str, limit: int, tail_chars: int) -> str:
+    """Keep the beginning and end of a summary within a character limit."""
+    if len(value) <= limit:
+        return value
+
+    omitted = len(value)
+    for _ in range(10):
+        omitted_text = f"{omitted:,}".replace(",", ".")
+        separator = f"\n\n[… {omitted_text} caracteres omitidos …]\n\n"
+        available = limit - len(separator)
+        if available < 2:
+            return _truncate(value, limit)
+        tail_length = min(max(0, tail_chars), available - 1)
+        head_length = available - tail_length
+        new_omitted = len(value) - head_length - tail_length
+        if new_omitted == omitted:
+            tail = value[-tail_length:] if tail_length else ""
+            return value[:head_length] + separator + tail
+        omitted = new_omitted
+
+    return _truncate(value, limit)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -184,6 +210,22 @@ def _config_seconds(
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return max(0.0, float(value))
     return _env_seconds(env_name, default)
+
+
+def _config_int(
+    config: dict[str, Any],
+    section_name: str,
+    key: str,
+    default: int,
+    *,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> int:
+    value = _config_section(config, section_name).get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        value = default
+    result = max(minimum, int(value))
+    return min(result, maximum) if maximum is not None else result
 
 
 def _config_text(
@@ -426,16 +468,35 @@ def _chat_title(notification: dict[str, Any]) -> str:
 
 
 def build_payload(
-    notification: dict[str, Any], duration_seconds: float, marker: dict[str, Any]
+    notification: dict[str, Any],
+    duration_seconds: float,
+    marker: dict[str, Any],
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    settings = {} if config is None else config
     completed_at = datetime.now().astimezone().strftime("%d/%m/%Y %H:%M %Z")
     chat_id = _text(notification.get("thread-id")) or _text(marker.get("session_id"))
     chat_title = _chat_title(notification)
     cwd = _text(notification.get("cwd")) or _text(marker.get("cwd"))
-    summary = _truncate(
+    summary_max_chars = _config_int(
+        settings,
+        "teams",
+        "summary_max_chars",
+        DEFAULT_SUMMARY_MAX_CHARS,
+        minimum=MIN_SUMMARY_MAX_CHARS,
+        maximum=MAX_SUMMARY_MAX_CHARS,
+    )
+    summary_tail_chars = _config_int(
+        settings,
+        "teams",
+        "summary_tail_chars",
+        DEFAULT_SUMMARY_TAIL_CHARS,
+    )
+    summary = _summary_excerpt(
         _text(notification.get("last-assistant-message"))
         or "El turno terminó sin un mensaje final para resumir.",
-        MAX_SUMMARY_CHARS,
+        summary_max_chars,
+        summary_tail_chars,
     )
     facts = [
         {"title": "Estado", "value": "Completado"},
@@ -627,7 +688,8 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
         if webhook_url and urlsplit(webhook_url).scheme == "https":
             try:
                 send_teams_notification(
-                    webhook_url, build_payload(notification, duration, marker)
+                    webhook_url,
+                    build_payload(notification, duration, marker, config),
                 )
             except Exception as exc:
                 print(f"No se pudo enviar la notificación a Teams: {exc}", file=sys.stderr)

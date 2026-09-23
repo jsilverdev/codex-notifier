@@ -45,6 +45,8 @@ class InstallTests(unittest.TestCase):
 
         self.assertFalse(config["teams"]["enabled"])
         self.assertEqual(config["teams"]["minimum_seconds"], 300)
+        self.assertEqual(config["teams"]["summary_max_chars"], 1800)
+        self.assertEqual(config["teams"]["summary_tail_chars"], 600)
         self.assertEqual(config["teams"]["webhook_url"], "")
         self.assertEqual(config["voice"]["minimum_seconds"], 65)
         self.assertEqual(config["voice"]["quiet_start"], "23:00")

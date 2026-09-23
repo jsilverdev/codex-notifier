@@ -109,6 +109,40 @@ class NotifierTests(unittest.TestCase):
         self.assertIn({"title": "Duración", "value": "3 min 5 s"}, facts)
         self.assertEqual(content["body"][-1]["text"], "Listo.")
 
+    def test_long_summary_keeps_configured_beginning_and_end(self) -> None:
+        message = "INICIO-" + ("x" * 180) + "-FINAL"
+        payload = notifier.build_payload(
+            {"last-assistant-message": message},
+            300,
+            {},
+            {"teams": {"summary_max_chars": 100, "summary_tail_chars": 20}},
+        )
+
+        summary = payload["attachments"][0]["content"]["body"][-1]["text"]
+        self.assertEqual(len(summary), 100)
+        self.assertTrue(summary.startswith("INICIO-"))
+        self.assertTrue(summary.endswith("-FINAL"))
+        self.assertIn("caracteres omitidos", summary)
+
+    def test_summary_limits_are_bounded_for_teams(self) -> None:
+        message = "a" * 7000
+        payload = notifier.build_payload(
+            {"last-assistant-message": message},
+            300,
+            {},
+            {"teams": {"summary_max_chars": 50000, "summary_tail_chars": 1000}},
+        )
+
+        summary = payload["attachments"][0]["content"]["body"][-1]["text"]
+        self.assertEqual(len(summary), notifier.MAX_SUMMARY_MAX_CHARS)
+
+    def test_summary_tail_can_be_disabled(self) -> None:
+        summary = notifier._summary_excerpt("abcdefghij" * 20, 100, 0)
+
+        self.assertEqual(len(summary), 100)
+        self.assertTrue(summary.startswith("abcdefghij"))
+        self.assertFalse(summary.endswith("abcdefghij"))
+
     def test_config_file_takes_precedence_over_environment(self) -> None:
         config = {
             "teams": {"enabled": True, "minimum_seconds": 10},

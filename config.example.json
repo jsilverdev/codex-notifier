@@ -2,6 +2,8 @@
   "teams": {
     "enabled": false,
     "minimum_seconds": 300,
+    "summary_max_chars": 1800,
+    "summary_tail_chars": 600,
     "webhook_url": ""
   },
   "voice": {

@@ -13,6 +13,8 @@ La configuración inicial se copia literalmente desde `config.example.json`:
 
 - Teams desactivado hasta añadir un webhook y cambiar `enabled` a `true`.
 - Teams a partir de 300 segundos.
+- Los resúmenes largos conservan el inicio y los últimos 600 caracteres dentro
+  de un máximo de 1.800 caracteres.
 - Voz a partir de 65 segundos.
 - Silencio de voz entre las 23:00 y las 07:00.
 - Idioma de voz automático según el mensaje final.
@@ -119,6 +121,8 @@ Se puede usar otra ruta definiendo `CODEX_NOTIFIER_CONFIG` o pasando
   "teams": {
     "enabled": false,
     "minimum_seconds": 300,
+    "summary_max_chars": 1800,
+    "summary_tail_chars": 600,
     "webhook_url": ""
   },
   "voice": {
@@ -142,6 +146,13 @@ Para activar Teams, completa ambos valores:
 
 El webhook es una credencial. El archivo local está fuera del repositorio y no
 debe compartirse ni añadirse a Git.
+
+Cuando el mensaje final supera `summary_max_chars`, la card muestra el comienzo,
+un aviso con el número de caracteres omitidos y los últimos
+`summary_tail_chars`. El máximo configurable se mantiene entre 100 y 6.000
+caracteres para dejar margen bajo el límite total de 28 KB de Teams. Si la
+configuración local existente no incluye estas propiedades, se aplican los
+valores predeterminados de 1.800 y 600.
 
 `language` admite:
 
