@@ -14,5 +14,9 @@
     "language": "auto",
     "spanish_voice": "",
     "english_voice": ""
+  },
+  "logging": {
+    "enabled": true,
+    "retention_days": 7
   }
 }

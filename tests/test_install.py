@@ -51,6 +51,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(config["voice"]["minimum_seconds"], 65)
         self.assertEqual(config["voice"]["quiet_start"], "23:00")
         self.assertEqual(config["voice"]["quiet_end"], "07:00")
+        self.assertTrue(config["logging"]["enabled"])
+        self.assertEqual(config["logging"]["retention_days"], 7)
 
     def test_resolver_prefers_system_python_then_mise(self) -> None:
         valid = Mock(returncode=0)

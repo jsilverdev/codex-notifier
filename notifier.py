@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -49,6 +49,10 @@ DEFAULT_SUMMARY_MAX_CHARS = 1800
 DEFAULT_SUMMARY_TAIL_CHARS = 600
 MIN_SUMMARY_MAX_CHARS = 100
 MAX_SUMMARY_MAX_CHARS = 6000
+DEFAULT_LOG_RETENTION_DAYS = 7
+MAX_LOG_RETENTION_DAYS = 365
+MAX_LOG_ERROR_CHARS = 300
+SPEECH_TIMEOUT_SECONDS = 30
 
 SPANISH_WORDS = {
     "al",
@@ -195,12 +199,16 @@ def _config_section(config: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _config_bool(
-    config: dict[str, Any], section_name: str, key: str, env_name: str, default: bool
+    config: dict[str, Any],
+    section_name: str,
+    key: str,
+    env_name: str | None,
+    default: bool,
 ) -> bool:
     value = _config_section(config, section_name).get(key)
     if isinstance(value, bool):
         return value
-    return _env_bool(env_name, default)
+    return _env_bool(env_name, default) if env_name else default
 
 
 def _config_seconds(
@@ -269,6 +277,73 @@ def state_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
     return default_state_dir()
+
+
+def log_dir() -> Path:
+    return state_dir() / "logs"
+
+
+def _safe_error(exc: Exception, *secrets: str) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return _truncate(message, MAX_LOG_ERROR_CHARS)
+
+
+def _cleanup_old_logs(directory: Path, moment: datetime, retention_days: int) -> None:
+    oldest = moment.date() - timedelta(days=retention_days - 1)
+    for path in directory.glob("notifier-????-??-??.jsonl"):
+        try:
+            file_date = datetime.strptime(path.stem[9:], "%Y-%m-%d").date()
+            if file_date < oldest:
+                path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            continue
+
+
+def write_trace_log(
+    config: dict[str, Any],
+    *,
+    moment: datetime,
+    chat_id: str,
+    duration_seconds: float | None,
+    teams_status: str,
+    voice_status: str,
+    teams_error: str = "",
+    voice_error: str = "",
+) -> None:
+    if not _config_bool(config, "logging", "enabled", None, True):
+        return
+    retention_days = _config_int(
+        config,
+        "logging",
+        "retention_days",
+        DEFAULT_LOG_RETENTION_DAYS,
+        minimum=1,
+        maximum=MAX_LOG_RETENTION_DAYS,
+    )
+    directory = log_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_logs(directory, moment, retention_days)
+    entry: dict[str, Any] = {
+        "timestamp": moment.isoformat(timespec="seconds"),
+        "chat_id": chat_id,
+        "duration_seconds": (
+            round(duration_seconds, 3) if duration_seconds is not None else None
+        ),
+        "teams_status": teams_status,
+        "voice_status": voice_status,
+    }
+    if teams_error:
+        entry["teams_error"] = teams_error
+    if voice_error:
+        entry["voice_error"] = voice_error
+    path = directory / f"notifier-{moment.date().isoformat()}.jsonl"
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    if os.name != "nt":
+        path.chmod(0o600)
 
 
 def _marker_path(turn_id: str) -> Path:
@@ -615,7 +690,7 @@ def speak_windows(
         "[void]$voice.Speak($text)"
     )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(
+    subprocess.run(
         [
             "powershell.exe",
             "-NoLogo",
@@ -629,13 +704,15 @@ def speak_windows(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=creation_flags,
+        check=True,
+        timeout=SPEECH_TIMEOUT_SECONDS,
     )
 
 
 def speak_linux(message: str, *, language: str = "es") -> None:
     speech_dispatcher = shutil.which("spd-say")
     if speech_dispatcher:
-        command = [speech_dispatcher, "-l", language, message]
+        command = [speech_dispatcher, "-w", "-l", language, message]
     else:
         espeak = shutil.which("espeak-ng") or shutil.which("espeak")
         if not espeak:
@@ -643,12 +720,13 @@ def speak_linux(message: str, *, language: str = "es") -> None:
                 "Instala speech-dispatcher (spd-say) o espeak-ng para usar voz en Linux."
             )
         command = [espeak, "-v", language, message]
-    subprocess.Popen(
+    subprocess.run(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        check=True,
+        timeout=SPEECH_TIMEOUT_SECONDS,
     )
 
 
@@ -670,9 +748,6 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
     if notification.get("type") != "agent-turn-complete":
         return
     duration, marker = consume_start(notification, now=now)
-    if duration is None:
-        return
-
     try:
         config = load_config()
     except (OSError, TypeError, json.JSONDecodeError) as exc:
@@ -680,22 +755,34 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
         config = {}
 
     moment = datetime.now().astimezone()
-    teams_due, voice_due = notification_channels(duration, moment, config)
-    if teams_due:
-        webhook_url = _config_text(
-            config, "teams", "webhook_url", WEBHOOK_ENV
-        )
-        if webhook_url and urlsplit(webhook_url).scheme == "https":
-            try:
-                send_teams_notification(
-                    webhook_url,
-                    build_payload(notification, duration, marker, config),
-                )
-            except Exception as exc:
-                print(f"No se pudo enviar la notificación a Teams: {exc}", file=sys.stderr)
-        elif webhook_url:
-            print("El webhook de Teams debe usar HTTPS.", file=sys.stderr)
+    chat_id = (
+        _text(notification.get("thread-id") or notification.get("thread_id"))
+        or _text(marker.get("session_id"))
+    )
+    if duration is None:
+        try:
+            write_trace_log(
+                config,
+                moment=moment,
+                chat_id=chat_id,
+                duration_seconds=None,
+                teams_status="not_evaluated",
+                voice_status="not_evaluated",
+                teams_error="No se encontró el marcador de inicio del turno.",
+                voice_error="No se encontró el marcador de inicio del turno.",
+            )
+        except OSError as exc:
+            print(f"No se pudo escribir el log del notificador: {exc}", file=sys.stderr)
+        return
 
+    teams_due, voice_due = notification_channels(duration, moment, config)
+    teams_status = "not_due"
+    voice_status = "not_due"
+    teams_error = ""
+    voice_error = ""
+
+    # Voice runs first and synchronously so a slow or failed webhook cannot
+    # delay or cancel the local notification.
     if voice_due:
         try:
             voice_config = _config_section(config, "voice")
@@ -713,8 +800,49 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
                 language=language,
                 preferred_voice=preferred_voice,
             )
+            voice_status = "sent"
         except Exception as exc:
+            voice_status = "failed"
+            voice_error = _safe_error(exc)
             print(f"No se pudo reproducir el aviso de voz: {exc}", file=sys.stderr)
+
+    if teams_due:
+        webhook_url = _config_text(
+            config, "teams", "webhook_url", WEBHOOK_ENV
+        )
+        if webhook_url and urlsplit(webhook_url).scheme == "https":
+            try:
+                send_teams_notification(
+                    webhook_url,
+                    build_payload(notification, duration, marker, config),
+                )
+                teams_status = "sent"
+            except Exception as exc:
+                teams_status = "failed"
+                teams_error = _safe_error(exc, webhook_url)
+                print(f"No se pudo enviar la notificación a Teams: {exc}", file=sys.stderr)
+        else:
+            teams_status = "failed"
+            teams_error = (
+                "El webhook de Teams debe usar HTTPS."
+                if webhook_url
+                else "No hay un webhook de Teams configurado."
+            )
+            print(teams_error, file=sys.stderr)
+
+    try:
+        write_trace_log(
+            config,
+            moment=moment,
+            chat_id=chat_id,
+            duration_seconds=duration,
+            teams_status=teams_status,
+            voice_status=voice_status,
+            teams_error=teams_error,
+            voice_error=voice_error,
+        )
+    except OSError as exc:
+        print(f"No se pudo escribir el log del notificador: {exc}", file=sys.stderr)
 
 
 def _read_json_stdin() -> dict[str, Any]:

@@ -183,17 +183,21 @@ class NotifierTests(unittest.TestCase):
             notifier._voice_message(notification, 301, marker, "en"),
         )
 
-    @patch("notifier.subprocess.Popen")
-    def test_speech_passes_language_and_preferred_voice(self, popen) -> None:
+    @patch("notifier.subprocess.run")
+    def test_speech_waits_and_passes_language_and_preferred_voice(self, run) -> None:
         notifier.speak_windows(
             "Prueba", language="es", preferred_voice="Microsoft Helena Desktop"
         )
 
-        environment = popen.call_args.kwargs["env"]
+        environment = run.call_args.kwargs["env"]
         self.assertEqual(environment["CODEX_NOTIFIER_SPEECH_LANGUAGE"], "es")
         self.assertEqual(
             environment["CODEX_NOTIFIER_SPEECH_VOICE"],
             "Microsoft Helena Desktop",
+        )
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], notifier.SPEECH_TIMEOUT_SECONDS
         )
 
     @patch("notifier.speak")
@@ -246,6 +250,147 @@ class NotifierTests(unittest.TestCase):
             "Microsoft Helena Desktop",
         )
 
+        log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
+        entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["chat_id"], "thread-file-config")
+        self.assertEqual(entry["duration_seconds"], 100)
+        self.assertEqual(entry["teams_status"], "sent")
+        self.assertEqual(entry["voice_status"], "sent")
+        serialized = json.dumps(entry)
+        self.assertNotIn("La tarea está lista", serialized)
+        self.assertNotIn("example.invalid", serialized)
+        self.assertNotIn(r"C:\work\demo", serialized)
+
+    @patch("notifier.speak")
+    @patch("notifier.send_teams_notification")
+    def test_teams_failure_does_not_prevent_voice(self, send_teams, speak) -> None:
+        config = {
+            "teams": {
+                "enabled": True,
+                "minimum_seconds": 0,
+                "webhook_url": "https://secret.invalid/webhook-token",
+            },
+            "voice": {
+                "enabled": True,
+                "minimum_seconds": 0,
+                "quiet_start": "00:00",
+                "quiet_end": "00:00",
+            },
+        }
+        notifier.config_path().write_text(json.dumps(config), encoding="utf-8")
+        notifier.record_start(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "thread-failure",
+                "turn_id": "turn-failure",
+            },
+            now=100,
+        )
+        send_teams.side_effect = RuntimeError(
+            "falló https://secret.invalid/webhook-token"
+        )
+
+        notifier.handle_completion(
+            {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-failure",
+                "turn-id": "turn-failure",
+                "last-assistant-message": "Listo.",
+            },
+            now=200,
+        )
+
+        speak.assert_called_once()
+        log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
+        entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["teams_status"], "failed")
+        self.assertEqual(entry["voice_status"], "sent")
+        self.assertIn("[redacted]", entry["teams_error"])
+        self.assertNotIn("webhook-token", entry["teams_error"])
+
+    @patch("notifier.speak")
+    @patch("notifier.send_teams_notification")
+    def test_voice_failure_does_not_prevent_teams(self, send_teams, speak) -> None:
+        config = {
+            "teams": {
+                "enabled": True,
+                "minimum_seconds": 0,
+                "webhook_url": "https://example.invalid/webhook",
+            },
+            "voice": {
+                "enabled": True,
+                "minimum_seconds": 0,
+                "quiet_start": "00:00",
+                "quiet_end": "00:00",
+            },
+        }
+        notifier.config_path().write_text(json.dumps(config), encoding="utf-8")
+        notifier.record_start(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "thread-voice-failure",
+                "turn_id": "turn-voice-failure",
+            },
+            now=100,
+        )
+        speak.side_effect = RuntimeError("SAPI no respondió")
+
+        notifier.handle_completion(
+            {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-voice-failure",
+                "turn-id": "turn-voice-failure",
+                "last-assistant-message": "Listo.",
+            },
+            now=200,
+        )
+
+        send_teams.assert_called_once()
+        log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
+        entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["teams_status"], "sent")
+        self.assertEqual(entry["voice_status"], "failed")
+        self.assertIn("SAPI no respondió", entry["voice_error"])
+
+    def test_missing_start_marker_is_logged(self) -> None:
+        notifier.handle_completion(
+            {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-without-marker",
+                "turn-id": "missing-turn",
+            }
+        )
+
+        log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
+        entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["chat_id"], "thread-without-marker")
+        self.assertIsNone(entry["duration_seconds"])
+        self.assertEqual(entry["teams_status"], "not_evaluated")
+        self.assertEqual(entry["voice_status"], "not_evaluated")
+
+    def test_daily_log_cleanup_honors_retention(self) -> None:
+        directory = notifier.log_dir()
+        directory.mkdir(parents=True)
+        old_log = directory / "notifier-2026-09-20.jsonl"
+        recent_log = directory / "notifier-2026-09-22.jsonl"
+        old_log.write_text("old\n", encoding="utf-8")
+        recent_log.write_text("recent\n", encoding="utf-8")
+
+        notifier.write_trace_log(
+            {"logging": {"enabled": True, "retention_days": 2}},
+            moment=datetime(2026, 9, 23, 12, 0),
+            chat_id="thread-log",
+            duration_seconds=129.25,
+            teams_status="not_due",
+            voice_status="sent",
+        )
+
+        self.assertFalse(old_log.exists())
+        self.assertTrue(recent_log.exists())
+        today_log = directory / "notifier-2026-09-23.jsonl"
+        entry = json.loads(today_log.read_text(encoding="utf-8"))
+        self.assertEqual(entry["duration_seconds"], 129.25)
+
     def test_linux_uses_xdg_paths(self) -> None:
         home = Path("/home/tester")
         self.assertEqual(
@@ -263,28 +408,29 @@ class NotifierTests(unittest.TestCase):
             Path("/home/tester/.local/state/codex-notifier"),
         )
 
-    @patch("notifier.subprocess.Popen")
+    @patch("notifier.subprocess.run")
     @patch("notifier.shutil.which")
-    def test_linux_speech_prefers_spd_say(self, which, popen) -> None:
+    def test_linux_speech_prefers_spd_say(self, which, run) -> None:
         which.side_effect = lambda name: "/usr/bin/spd-say" if name == "spd-say" else None
 
         notifier.speak_linux("Tarea terminada", language="es")
 
         self.assertEqual(
-            popen.call_args.args[0],
-            ["/usr/bin/spd-say", "-l", "es", "Tarea terminada"],
+            run.call_args.args[0],
+            ["/usr/bin/spd-say", "-w", "-l", "es", "Tarea terminada"],
         )
+        self.assertTrue(run.call_args.kwargs["check"])
 
-    @patch("notifier.subprocess.Popen")
+    @patch("notifier.subprocess.run")
     @patch("notifier.shutil.which")
-    def test_linux_speech_falls_back_to_espeak(self, which, popen) -> None:
+    def test_linux_speech_falls_back_to_espeak(self, which, run) -> None:
         paths = {"espeak-ng": "/usr/bin/espeak-ng"}
         which.side_effect = lambda name: paths.get(name)
 
         notifier.speak_linux("Task complete", language="en")
 
         self.assertEqual(
-            popen.call_args.args[0],
+            run.call_args.args[0],
             ["/usr/bin/espeak-ng", "-v", "en", "Task complete"],
         )
 

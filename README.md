@@ -18,6 +18,9 @@ La configuración inicial se copia literalmente desde `config.example.json`:
 - Voz a partir de 65 segundos.
 - Silencio de voz entre las 23:00 y las 07:00.
 - Idioma de voz automático según el mensaje final.
+- Voz y Teams se ejecutan de forma independiente; la voz espera a que el motor
+  termine para evitar que Codex cierre el proceso antes de tiempo.
+- Log diario de trazabilidad con siete días de retención.
 - Nunca se guarda el prompt; el estado temporal contiene solo identificadores,
   directorio y hora de inicio.
 
@@ -133,6 +136,10 @@ Se puede usar otra ruta definiendo `CODEX_NOTIFIER_CONFIG` o pasando
     "language": "auto",
     "spanish_voice": "",
     "english_voice": ""
+  },
+  "logging": {
+    "enabled": true,
+    "retention_days": 7
   }
 }
 ```
@@ -163,6 +170,31 @@ valores predeterminados de 1.800 y 600.
 En Windows, `spanish_voice` y `english_voice` pueden contener parte del nombre
 de una voz SAPI instalada. Si están vacíos, se elige automáticamente una voz del
 idioma. Linux utiliza el código de idioma con `spd-say` o `espeak`.
+
+## Log de trazabilidad
+
+El notifier escribe un archivo JSON Lines por día en el subdirectorio `logs`
+de su directorio de estado. Cada entrada contiene únicamente fecha y hora, ID
+del chat, duración y estado de Teams y voz. Los errores se recortan y el webhook
+se redacta; nunca se guardan el prompt, la respuesta, el proyecto ni la URL del
+webhook.
+
+Windows:
+
+```text
+%LOCALAPPDATA%\CodexNotifier\logs\notifier-AAAA-MM-DD.jsonl
+```
+
+Linux:
+
+```text
+$XDG_STATE_HOME/codex-notifier/logs/notifier-AAAA-MM-DD.jsonl
+```
+
+Si `XDG_STATE_HOME` no existe, se usa
+`~/.local/state/codex-notifier/logs`. `retention_days` indica cuántos archivos
+diarios se conservan, entre 1 y 365. La limpieza se realiza al escribir una
+nueva entrada y puede desactivarse todo el log con `logging.enabled=false`.
 
 ## Probar la voz
 
