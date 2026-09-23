@@ -1,14 +1,14 @@
 {
   "teams": {
-    "enabled": true,
-    "minimum_seconds": 120,
-    "webhook_url": "https://replace-with-your-teams-webhook"
+    "enabled": false,
+    "minimum_seconds": 300,
+    "webhook_url": ""
   },
   "voice": {
     "enabled": true,
-    "minimum_seconds": 300,
-    "quiet_start": "22:00",
-    "quiet_end": "08:00",
+    "minimum_seconds": 65,
+    "quiet_start": "23:00",
+    "quiet_end": "07:00",
     "language": "auto",
     "spanish_voice": "",
     "english_voice": ""

@@ -1,150 +1,203 @@
 # Codex Notifier
 
-Notificador pequeño para Codex en Windows. Envía una tarjeta a Microsoft Teams
-solo cuando un turno supera un tiempo mínimo y puede reproducir un aviso por voz
-con la voz integrada de Windows.
+Notificador de finalización para Codex en Windows y Linux. Envía una Adaptive
+Card a Microsoft Teams y puede reproducir un aviso por voz cuando el turno
+supera los umbrales configurados.
 
-No requiere paquetes de `pip`:
-
-- Python 3 y su biblioteca estándar.
-- Windows PowerShell/SAPI para la voz.
-- `mise` solo en los comandos de instalación incluidos, porque es el gestor de
-  Python usado en esta máquina. El script no depende de `mise`.
+No requiere paquetes de `pip`; usa únicamente Python 3 y herramientas del
+sistema operativo.
 
 ## Comportamiento predeterminado
 
-- Menos de 2 minutos: no notifica.
-- Desde 2 minutos: envía Teams si hay un webhook en el archivo local o en
-  `CODEX_TEAMS_WEBHOOK_URL`.
-- Desde 5 minutos: además reproduce un mensaje por voz.
-- Entre las 22:00 y las 08:00: silencia únicamente la voz.
-- Selecciona español o inglés según el mensaje final y usa una voz instalada de
-  ese idioma.
-- Guarda solo el identificador del turno, la hora, el identificador de sesión y
-  el directorio. Nunca guarda el prompt.
-- El marcador se consume al finalizar, evitando duplicar el mismo turno.
+La configuración inicial se copia literalmente desde `config.example.json`:
 
-## Funcionamiento
+- Teams desactivado hasta añadir un webhook y cambiar `enabled` a `true`.
+- Teams a partir de 300 segundos.
+- Voz a partir de 65 segundos.
+- Silencio de voz entre las 23:00 y las 07:00.
+- Idioma de voz automático según el mensaje final.
+- Nunca se guarda el prompt; el estado temporal contiene solo identificadores,
+  directorio y hora de inicio.
 
-El hook `UserPromptSubmit` ejecuta:
+## Requisitos
 
-```powershell
-mise exec -- python .\notifier.py record-start
-```
+- Python 3.10 o posterior.
+- Codex instalado y un `~/.codex/config.toml` accesible.
+- Windows: SAPI, incluido normalmente con Windows.
+- Linux, solo para voz: `spd-say` (Speech Dispatcher), `espeak-ng` o `espeak`.
+  Teams funciona aunque no haya motor de voz.
 
-Codex entrega el JSON del hook por `stdin`. Al completar el turno, `notify`
-ejecuta:
+`mise` no es obligatorio. El instalador busca Python 3 en este orden:
 
-```powershell
-mise exec -- python .\notifier.py notify '<json-de-codex>'
-```
+1. `python3`.
+2. En Windows, `py -3`.
+3. `python` si realmente es Python 3.
+4. `mise exec -- python` si no encontró un Python independiente.
+5. El intérprete con el que se inició `install.py`.
 
-El script correlaciona ambos eventos mediante `turn_id`, calcula la duración y
-decide qué canales usar.
+## Instalación única
 
-## Instalación
+Hay un único instalador multiplataforma: `install.py`.
 
-Desde PowerShell:
-
-```powershell
-.\install.ps1
-```
-
-El instalador:
-
-1. Crea una copia con fecha de `~/.codex/config.toml`.
-2. Actualiza la propiedad `notify` para apuntar a este repositorio.
-3. Crea `~/.codex/hooks.json` con el hook `UserPromptSubmit`.
-
-Por seguridad, se detiene si ya existe `hooks.json`, para no sobrescribir hooks
-ajenos. Después de instalar, abre un nuevo chat y usa `/hooks` para revisar y
-confiar en el hook. Codex no ejecuta hooks locales nuevos hasta que se aprueban.
-
-Genera el archivo local de configuración con:
+Windows:
 
 ```powershell
-.\configure.ps1
+python install.py
 ```
 
-El comando migra automáticamente `CODEX_TEAMS_WEBHOOK_URL`, si está definida, a
-`%LOCALAPPDATA%\CodexNotifier\config.json`. Ese archivo está fuera del
-repositorio y no se versiona. Puedes editarlo directamente para cambiar el
-webhook, los tiempos, el horario o las voces. `config.example.json` contiene la
-estructura completa sin credenciales.
+También puedes iniciarlo con:
 
-El webhook es una credencial. No compartas ni añadas el archivo local a Git.
+```powershell
+py -3 install.py
+mise exec -- python install.py
+```
 
-## Configuración
+Linux:
 
-Archivo predeterminado:
+```bash
+python3 install.py
+```
+
+Si Python solo está administrado por mise:
+
+```bash
+mise exec -- python install.py
+```
+
+El instalador realiza las tres tareas:
+
+1. Configura `notify` en `~/.codex/config.toml`.
+2. Añade o actualiza el hook `UserPromptSubmit` en `~/.codex/hooks.json`, sin
+   eliminar otros hooks.
+3. Si todavía no existe, copia `config.example.json` a la ubicación local de
+   configuración.
+
+Los archivos de Codex existentes reciben una copia `.bak` antes de modificarse.
+La configuración local existente nunca se sobrescribe automáticamente. Después
+de cambiar el hook, abre un chat nuevo y usa `/hooks` para revisarlo y confiar
+en él.
+
+Opciones útiles:
+
+```text
+--codex-home RUTA          CODEX_HOME alternativo
+--config-path RUTA         config.json alternativo
+--python-executable RUTA   Python 3 específico para notify y el hook
+--force-config             reemplaza config.json desde el ejemplo, con backup
+```
+
+Ten cuidado con `--force-config`: reemplaza el webhook y las preferencias
+locales por los valores del ejemplo.
+
+## Ubicación de la configuración
+
+Windows:
 
 ```text
 %LOCALAPPDATA%\CodexNotifier\config.json
 ```
 
-Ejemplo:
+Linux:
+
+```text
+$XDG_CONFIG_HOME/codex-notifier/config.json
+```
+
+Si `XDG_CONFIG_HOME` no existe:
+
+```text
+~/.config/codex-notifier/config.json
+```
+
+Se puede usar otra ruta definiendo `CODEX_NOTIFIER_CONFIG` o pasando
+`--config-path` al instalar.
+
+## Configuración
 
 ```json
 {
   "teams": {
-    "enabled": true,
-    "minimum_seconds": 120,
-    "webhook_url": "https://tu-webhook"
+    "enabled": false,
+    "minimum_seconds": 300,
+    "webhook_url": ""
   },
   "voice": {
     "enabled": true,
-    "minimum_seconds": 300,
-    "quiet_start": "22:00",
-    "quiet_end": "08:00",
+    "minimum_seconds": 65,
+    "quiet_start": "23:00",
+    "quiet_end": "07:00",
     "language": "auto",
-    "spanish_voice": "Microsoft Helena Desktop",
-    "english_voice": "Microsoft Zira Desktop"
+    "spanish_voice": "",
+    "english_voice": ""
   }
 }
 ```
 
-`language` admite `auto`, `es` o `en`. En `auto`, el idioma se estima usando el
-mensaje final. Si la voz indicada no existe, se elige otra voz instalada del
-mismo idioma y finalmente la voz predeterminada de Windows.
+Para activar Teams, completa ambos valores:
 
-Las variables de entorno anteriores siguen disponibles como fallback cuando un
-valor no aparece en el archivo:
+```json
+"enabled": true,
+"webhook_url": "https://tu-webhook"
+```
+
+El webhook es una credencial. El archivo local está fuera del repositorio y no
+debe compartirse ni añadirse a Git.
+
+`language` admite:
+
+- `auto`: estima español o inglés usando el mensaje final.
+- `es`: siempre español.
+- `en`: siempre inglés.
+
+En Windows, `spanish_voice` y `english_voice` pueden contener parte del nombre
+de una voz SAPI instalada. Si están vacíos, se elige automáticamente una voz del
+idioma. Linux utiliza el código de idioma con `spd-say` o `espeak`.
+
+## Probar la voz
+
+Windows:
+
+```powershell
+python .\notifier.py voice-test es
+python .\notifier.py voice-test en
+```
+
+Linux:
+
+```bash
+python3 ./notifier.py voice-test es
+python3 ./notifier.py voice-test en
+```
+
+Estos comandos reproducen sonido. Las pruebas automatizadas no reproducen audio
+ni llaman al webhook.
+
+## Variables de entorno opcionales
+
+El archivo JSON tiene prioridad. Si una propiedad no existe, se admiten estos
+fallbacks:
 
 | Variable | Predeterminado | Uso |
 | --- | ---: | --- |
-| `CODEX_TEAMS_WEBHOOK_URL` | vacío | Fallback del webhook |
-| `CODEX_NOTIFIER_TEAMS_ENABLED` | `1` | `0` desactiva Teams |
-| `CODEX_NOTIFIER_TEAMS_MIN_SECONDS` | `120` | Umbral de Teams |
-| `CODEX_NOTIFIER_VOICE_ENABLED` | `1` | `0` desactiva voz |
-| `CODEX_NOTIFIER_VOICE_MIN_SECONDS` | `300` | Umbral de voz |
-| `CODEX_NOTIFIER_QUIET_START` | `22:00` | Inicio del silencio |
-| `CODEX_NOTIFIER_QUIET_END` | `08:00` | Fin del silencio |
-| `CODEX_NOTIFIER_STATE_DIR` | `%LOCALAPPDATA%\CodexNotifier` | Estado temporal |
-| `CODEX_NOTIFIER_CONFIG` | `%LOCALAPPDATA%\CodexNotifier\config.json` | Ruta alternativa del archivo |
-
-Los valores se pueden definir para el usuario con
-`[Environment]::SetEnvironmentVariable(...)`. Reinicia Codex después de cambiar
-variables de entorno persistentes.
-
-Para probar exclusivamente cada voz, de forma explícita:
-
-```powershell
-mise exec -- python .\notifier.py voice-test es
-mise exec -- python .\notifier.py voice-test en
-```
-
-Este comando sí reproduce sonido. Las pruebas automatizadas nunca llaman al
-webhook ni reproducen audio.
+| `CODEX_TEAMS_WEBHOOK_URL` | vacío | Webhook alternativo |
+| `CODEX_NOTIFIER_TEAMS_ENABLED` | según exista webhook | Activa Teams |
+| `CODEX_NOTIFIER_TEAMS_MIN_SECONDS` | `300` | Umbral de Teams |
+| `CODEX_NOTIFIER_VOICE_ENABLED` | `1` | Activa la voz |
+| `CODEX_NOTIFIER_VOICE_MIN_SECONDS` | `65` | Umbral de voz |
+| `CODEX_NOTIFIER_QUIET_START` | `23:00` | Inicio del silencio |
+| `CODEX_NOTIFIER_QUIET_END` | `07:00` | Fin del silencio |
+| `CODEX_NOTIFIER_STATE_DIR` | dependiente del SO | Estado temporal |
+| `CODEX_NOTIFIER_CONFIG` | dependiente del SO | Ruta de configuración |
 
 ## Pruebas
 
 ```powershell
-mise exec -- python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
-## Limitaciones intencionales
+## Funcionamiento
 
-No se intenta interpretar si el texto final representa éxito o error, porque el
-payload de `notify` no proporciona un estado estructurado. Tampoco se inspecciona
-la ventana en primer plano: el filtro temporal es más predecible y mantiene el
-proyecto pequeño y replicable.
+`UserPromptSubmit` registra la hora de inicio y `notify` recibe el evento
+`agent-turn-complete`. Ambos se correlacionan mediante `turn_id`; al terminar se
+calcula la duración, se consume el marcador y se aplican los canales y el
+horario configurados.

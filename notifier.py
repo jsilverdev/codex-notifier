@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -38,10 +39,10 @@ QUIET_END_ENV = "CODEX_NOTIFIER_QUIET_END"
 STATE_DIR_ENV = "CODEX_NOTIFIER_STATE_DIR"
 CONFIG_PATH_ENV = "CODEX_NOTIFIER_CONFIG"
 
-DEFAULT_TEAMS_MIN_SECONDS = 120.0
-DEFAULT_VOICE_MIN_SECONDS = 300.0
-DEFAULT_QUIET_START = "22:00"
-DEFAULT_QUIET_END = "08:00"
+DEFAULT_TEAMS_MIN_SECONDS = 300.0
+DEFAULT_VOICE_MIN_SECONDS = 65.0
+DEFAULT_QUIET_START = "23:00"
+DEFAULT_QUIET_END = "07:00"
 STALE_MARKER_SECONDS = 48 * 60 * 60
 MAX_TITLE_CHARS = 120
 MAX_SUMMARY_CHARS = 1800
@@ -126,14 +127,30 @@ def _env_seconds(name: str, default: float) -> float:
         return default
 
 
+def default_config_path(
+    *,
+    platform_name: str | None = None,
+    environment: dict[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    platform = os.name if platform_name is None else platform_name
+    env = os.environ if environment is None else environment
+    user_home = Path.home() if home is None else home
+    if platform == "nt":
+        local_app_data = env.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            return Path(local_app_data) / "CodexNotifier" / "config.json"
+        return user_home / "AppData" / "Local" / "CodexNotifier" / "config.json"
+    xdg_config_home = env.get("XDG_CONFIG_HOME", "").strip()
+    config_home = Path(xdg_config_home) if xdg_config_home else user_home / ".config"
+    return config_home / "codex-notifier" / "config.json"
+
+
 def config_path() -> Path:
     configured = os.environ.get(CONFIG_PATH_ENV, "").strip()
     if configured:
         return Path(configured).expanduser()
-    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return Path(local_app_data) / "CodexNotifier" / "config.json"
-    return Path.home() / ".codex-notifier" / "config.json"
+    return default_config_path()
 
 
 def load_config() -> dict[str, Any]:
@@ -186,14 +203,30 @@ def _config_text(
     return default
 
 
+def default_state_dir(
+    *,
+    platform_name: str | None = None,
+    environment: dict[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    platform = os.name if platform_name is None else platform_name
+    env = os.environ if environment is None else environment
+    user_home = Path.home() if home is None else home
+    if platform == "nt":
+        local_app_data = env.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            return Path(local_app_data) / "CodexNotifier"
+        return user_home / "AppData" / "Local" / "CodexNotifier"
+    xdg_state_home = env.get("XDG_STATE_HOME", "").strip()
+    state_home = Path(xdg_state_home) if xdg_state_home else user_home / ".local" / "state"
+    return state_home / "codex-notifier"
+
+
 def state_dir() -> Path:
     configured = os.environ.get(STATE_DIR_ENV, "").strip()
     if configured:
         return Path(configured).expanduser()
-    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return Path(local_app_data) / "CodexNotifier"
-    return Path.home() / ".codex-notifier"
+    return default_state_dir()
 
 
 def _marker_path(turn_id: str) -> Path:
@@ -305,8 +338,11 @@ def notification_channels(
     config: dict[str, Any] | None = None,
 ) -> tuple[bool, bool]:
     settings = load_config() if config is None else config
+    webhook_configured = bool(
+        _config_text(settings, "teams", "webhook_url", WEBHOOK_ENV)
+    )
     teams = _config_bool(
-        settings, "teams", "enabled", TEAMS_ENABLED_ENV, True
+        settings, "teams", "enabled", TEAMS_ENABLED_ENV, webhook_configured
     ) and duration_seconds >= _config_seconds(
         settings,
         "teams",
@@ -535,6 +571,40 @@ def speak_windows(
     )
 
 
+def speak_linux(message: str, *, language: str = "es") -> None:
+    speech_dispatcher = shutil.which("spd-say")
+    if speech_dispatcher:
+        command = [speech_dispatcher, "-l", language, message]
+    else:
+        espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        if not espeak:
+            raise RuntimeError(
+                "Instala speech-dispatcher (spd-say) o espeak-ng para usar voz en Linux."
+            )
+        command = [espeak, "-v", language, message]
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def speak(
+    message: str, *, language: str = "es", preferred_voice: str = ""
+) -> None:
+    if os.name == "nt":
+        speak_windows(
+            message, language=language, preferred_voice=preferred_voice
+        )
+        return
+    if os.name == "posix":
+        speak_linux(message, language=language)
+        return
+    raise RuntimeError(f"La voz local no es compatible con la plataforma {os.name}.")
+
+
 def handle_completion(notification: dict[str, Any], *, now: float | None = None) -> None:
     if notification.get("type") != "agent-turn-complete":
         return
@@ -576,7 +646,7 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
                     "spanish_voice" if language == "es" else "english_voice"
                 )
             )
-            speak_windows(
+            speak(
                 _voice_message(notification, duration, marker, language),
                 language=language,
                 preferred_voice=preferred_voice,
@@ -623,7 +693,7 @@ def main() -> int:
                 if language == "en"
                 else "La notificación por voz de Codex está funcionando."
             )
-            speak_windows(
+            speak(
                 message, language=language, preferred_voice=preferred_voice
             )
             return 0

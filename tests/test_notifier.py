@@ -25,11 +25,11 @@ class NotifierTests(unittest.TestCase):
                 notifier.STATE_DIR_ENV: self.temp_dir.name,
                 notifier.CONFIG_PATH_ENV: str(Path(self.temp_dir.name) / "config.json"),
                 notifier.TEAMS_ENABLED_ENV: "1",
-                notifier.TEAMS_MIN_SECONDS_ENV: "120",
+                notifier.TEAMS_MIN_SECONDS_ENV: "300",
                 notifier.VOICE_ENABLED_ENV: "1",
-                notifier.VOICE_MIN_SECONDS_ENV: "300",
-                notifier.QUIET_START_ENV: "22:00",
-                notifier.QUIET_END_ENV: "08:00",
+                notifier.VOICE_MIN_SECONDS_ENV: "65",
+                notifier.QUIET_START_ENV: "23:00",
+                notifier.QUIET_END_ENV: "07:00",
             },
             clear=False,
         )
@@ -60,17 +60,25 @@ class NotifierTests(unittest.TestCase):
 
     def test_short_turn_has_no_channels(self) -> None:
         teams, voice = notifier.notification_channels(
-            119, datetime(2026, 9, 23, 12, 0)
+            64, datetime(2026, 9, 23, 12, 0)
         )
         self.assertFalse(teams)
         self.assertFalse(voice)
 
-    def test_medium_turn_only_uses_teams(self) -> None:
+    def test_teams_defaults_to_disabled_without_webhook(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            teams, _ = notifier.notification_channels(
+                1000, datetime(2026, 9, 23, 12, 0), {}
+            )
+
+        self.assertFalse(teams)
+
+    def test_medium_turn_only_uses_voice(self) -> None:
         teams, voice = notifier.notification_channels(
             180, datetime(2026, 9, 23, 12, 0)
         )
-        self.assertTrue(teams)
-        self.assertFalse(voice)
+        self.assertFalse(teams)
+        self.assertTrue(voice)
 
     def test_long_turn_uses_teams_and_voice(self) -> None:
         teams, voice = notifier.notification_channels(
@@ -154,7 +162,7 @@ class NotifierTests(unittest.TestCase):
             "Microsoft Helena Desktop",
         )
 
-    @patch("notifier.speak_windows")
+    @patch("notifier.speak")
     @patch("notifier.send_teams_notification")
     def test_completion_uses_file_webhook_and_spanish_voice(
         self, send_teams, speak
@@ -202,6 +210,48 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(
             speak.call_args.kwargs["preferred_voice"],
             "Microsoft Helena Desktop",
+        )
+
+    def test_linux_uses_xdg_paths(self) -> None:
+        home = Path("/home/tester")
+        self.assertEqual(
+            notifier.default_config_path(
+                platform_name="posix",
+                environment={"XDG_CONFIG_HOME": "/custom/config"},
+                home=home,
+            ),
+            Path("/custom/config/codex-notifier/config.json"),
+        )
+        self.assertEqual(
+            notifier.default_state_dir(
+                platform_name="posix", environment={}, home=home
+            ),
+            Path("/home/tester/.local/state/codex-notifier"),
+        )
+
+    @patch("notifier.subprocess.Popen")
+    @patch("notifier.shutil.which")
+    def test_linux_speech_prefers_spd_say(self, which, popen) -> None:
+        which.side_effect = lambda name: "/usr/bin/spd-say" if name == "spd-say" else None
+
+        notifier.speak_linux("Tarea terminada", language="es")
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["/usr/bin/spd-say", "-l", "es", "Tarea terminada"],
+        )
+
+    @patch("notifier.subprocess.Popen")
+    @patch("notifier.shutil.which")
+    def test_linux_speech_falls_back_to_espeak(self, which, popen) -> None:
+        paths = {"espeak-ng": "/usr/bin/espeak-ng"}
+        which.side_effect = lambda name: paths.get(name)
+
+        notifier.speak_linux("Task complete", language="en")
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["/usr/bin/espeak-ng", "-v", "en", "Task complete"],
         )
 
 
