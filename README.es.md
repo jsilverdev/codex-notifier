@@ -41,24 +41,10 @@ Teams y Discord no necesitan un motor de voz local.
 
 ## Instalación
 
-Ejecuta una vez el instalador multiplataforma.
+Ejecuta una vez el instalador multiplataforma:
 
-Windows:
-
-```powershell
+```shell
 python install.py
-```
-
-Linux:
-
-```bash
-python3 install.py
-```
-
-Si Python se administra únicamente mediante mise:
-
-```text
-mise exec -- python install.py
 ```
 
 El instalador:
@@ -139,24 +125,18 @@ El instalador no combina claves nuevas dentro de una configuración existente.
 Al actualizar, compara tu archivo local con `config.example.json` y añade
 manualmente cualquier clave nueva.
 
-### Teams y Discord
-
-Habilita el canal de webhook y proporciona su URL en la misma sección:
-
-```json
-"enabled": true,
-"webhook_url": "https://your-webhook"
-```
-
-Las URL de webhook son credenciales. Mantén la configuración local fuera del
-control de versiones y rota cualquier URL que se exponga.
+### Teams
 
 Teams usa una Adaptive Card. Al truncar, su resumen conserva el inicio y una
 cola configurable; `summary_max_chars` se limita a valores entre 100 y 6000
-caracteres.
+caracteres. `summary_tail_chars` controla cuánto contenido del final se
+conserva.
+
+### Discord
 
 Discord usa un embed, solicita confirmación de entrega, deshabilita las
-menciones procedentes del resumen y limita la descripción a 4096 caracteres.
+menciones procedentes del resumen y limita `summary_max_chars` al máximo de
+4096 caracteres admitido por la descripción del embed.
 
 ### Voz
 
@@ -210,14 +190,13 @@ como `false` para deshabilitar el registro.
 
 ## Probar la voz
 
-```powershell
+```shell
 python notifier.py voice-test es
 python notifier.py voice-test en
 ```
 
-Usa el comando de Python disponible en tu sistema si es diferente. Estos
-comandos reproducen audio; las pruebas automatizadas simulan las llamadas de
-voz y webhook.
+Estos comandos reproducen audio; las pruebas automatizadas simulan las llamadas
+de voz y webhook.
 
 ## Ejecutar las pruebas
 

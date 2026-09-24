@@ -40,22 +40,8 @@ Teams and Discord do not require a local speech engine.
 
 Run the cross-platform installer once:
 
-Windows:
-
-```powershell
+```shell
 python install.py
-```
-
-Linux:
-
-```bash
-python3 install.py
-```
-
-If Python is managed only by mise:
-
-```text
-mise exec -- python install.py
 ```
 
 The installer:
@@ -135,24 +121,18 @@ The installer does not merge new keys into an existing configuration. When
 upgrading, compare your local file with `config.example.json` and add any new
 keys manually.
 
-### Teams and Discord
-
-Enable a webhook channel and provide its URL in the same section:
-
-```json
-"enabled": true,
-"webhook_url": "https://your-webhook"
-```
-
-Webhook URLs are credentials. Keep the local configuration out of version
-control and rotate a URL if it is exposed.
+### Teams
 
 Teams uses an Adaptive Card. Its summary preserves the beginning and a
 configurable tail when truncation is required; `summary_max_chars` is bounded
-between 100 and 6,000 characters.
+between 100 and 6,000 characters. `summary_tail_chars` controls how much of the
+end is retained.
+
+### Discord
 
 Discord uses an embed, requests delivery confirmation, disables mentions from
-summary text, and caps the description at 4,096 characters.
+summary text, and caps `summary_max_chars` at the 4,096-character embed
+description limit.
 
 ### Voice
 
@@ -202,13 +182,12 @@ set `logging.enabled` to `false` to disable the log.
 
 ## Test voice
 
-```powershell
+```shell
 python notifier.py voice-test es
 python notifier.py voice-test en
 ```
 
-Use your system's Python command if it differs. These commands play audio;
-automated tests mock speech and webhook calls.
+These commands play audio; automated tests mock speech and webhook calls.
 
 ## Run tests
 
