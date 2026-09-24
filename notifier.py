@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -777,8 +778,19 @@ def _voice_message(
     return base + extra
 
 
+def _configured_volume(voice_config: dict[str, Any]) -> float | None:
+    value = voice_config.get("volume")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return min(1.0, max(0.0, float(value)))
+
+
 def speak_windows(
-    message: str, *, language: str = "es", preferred_voice: str = ""
+    message: str,
+    *,
+    language: str = "es",
+    preferred_voice: str = "",
+    volume: float | None = None,
 ) -> None:
     if os.name != "nt":
         raise RuntimeError("La voz local solo está disponible en Windows.")
@@ -787,12 +799,16 @@ def speak_windows(
     environment["CODEX_NOTIFIER_SPEECH_B64"] = encoded
     environment["CODEX_NOTIFIER_SPEECH_LANGUAGE"] = language
     environment["CODEX_NOTIFIER_SPEECH_VOICE"] = preferred_voice
+    environment["CODEX_NOTIFIER_SPEECH_VOLUME"] = (
+        "" if volume is None else str(round(min(1.0, max(0.0, volume)) * 100))
+    )
     script = (
         "$bytes=[Convert]::FromBase64String($env:CODEX_NOTIFIER_SPEECH_B64);"
         "$text=[Text.Encoding]::UTF8.GetString($bytes);"
         "$voice=New-Object -ComObject SAPI.SpVoice;"
         "$wantedName=$env:CODEX_NOTIFIER_SPEECH_VOICE;"
         "$wantedLanguage=$env:CODEX_NOTIFIER_SPEECH_LANGUAGE;"
+        "$wantedVolume=$env:CODEX_NOTIFIER_SPEECH_VOLUME;"
         "$selected=$null;"
         "foreach($candidate in $voice.GetVoices()){"
         "$description=$candidate.GetDescription();"
@@ -804,6 +820,7 @@ def speak_windows(
         "if($culture.TwoLetterISOLanguageName -eq $wantedLanguage){"
         "$selected=$candidate}}catch{}}};"
         "if($selected){$voice.Voice=$selected};"
+        "if($wantedVolume -ne ''){$voice.Volume=[int]$wantedVolume};"
         "[void]$voice.Speak($text)"
     )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -826,7 +843,134 @@ def speak_windows(
     )
 
 
-def speak_linux(message: str, *, language: str = "es") -> None:
+def _configured_voice(voice_config: dict[str, Any], language: str) -> str:
+    key = "spanish_voice" if language == "es" else "english_voice"
+    return _text(voice_config.get(key))
+
+
+def _resolve_executable(configured: str, default: str) -> str | None:
+    requested = configured or default
+    if Path(requested).expanduser().parent != Path("."):
+        path = Path(requested).expanduser()
+        return str(path) if path.is_file() else None
+    return shutil.which(requested)
+
+
+def speak_piper(
+    message: str, *, language: str = "es", voice_config: dict[str, Any]
+) -> None:
+    model_name = _configured_voice(voice_config, language)
+    if not model_name:
+        key = "spanish_voice" if language == "es" else "english_voice"
+        raise RuntimeError(f"Configura voice.{key} para usar Piper.")
+    model = Path(model_name).expanduser()
+    if not model.is_file():
+        raise RuntimeError(f"No se encontró el modelo de Piper: {model}")
+
+    configured_executable = _text(voice_config.get("piper_executable"))
+    piper = _resolve_executable(configured_executable, "piper")
+    if not piper:
+        raise RuntimeError(
+            "No se encontró Piper. Instala piper-tts o configura "
+            "voice.piper_executable."
+        )
+
+    powershell = shutil.which("powershell.exe")
+    wslpath = shutil.which("wslpath")
+    player = None
+    if not (powershell and wslpath):
+        player = next(
+            (
+                (name, shutil.which(name))
+                for name in ("paplay", "pw-play", "aplay", "ffplay")
+                if shutil.which(name)
+            ),
+            None,
+        )
+    if not (powershell and wslpath) and not player:
+        raise RuntimeError(
+            "No se encontró un reproductor compatible: instala paplay, pw-play, "
+            "aplay o ffplay. En WSL también se admite powershell.exe."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="codex-notifier-") as temporary_dir:
+        wav_path = Path(temporary_dir) / "speech.wav"
+        piper_command = [piper, "-m", str(model), "-f", str(wav_path)]
+        volume = _configured_volume(voice_config)
+        if volume is not None:
+            piper_command.extend(["--volume", str(volume)])
+        piper_command.extend(["--", message])
+        subprocess.run(
+            piper_command,
+            cwd=temporary_dir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=SPEECH_TIMEOUT_SECONDS,
+        )
+        if powershell and wslpath:
+            windows_path = subprocess.run(
+                [wslpath, "-w", str(wav_path)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            ).stdout.strip()
+            encoded_path = base64.b64encode(windows_path.encode("utf-8")).decode(
+                "ascii"
+            )
+            script = (
+                "$ErrorActionPreference='Stop';"
+                f"$bytes=[Convert]::FromBase64String('{encoded_path}');"
+                "$path=[Text.Encoding]::UTF8.GetString($bytes);"
+                "$player=New-Object System.Media.SoundPlayer $path;"
+                "$player.Load();$player.PlaySync()"
+            )
+            subprocess.run(
+                [
+                    powershell,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=SPEECH_TIMEOUT_SECONDS,
+            )
+        else:
+            player_name, player_path = player
+            player_command = (
+                [player_path, "-nodisp", "-autoexit", str(wav_path)]
+                if player_name == "ffplay"
+                else [player_path, str(wav_path)]
+            )
+            subprocess.run(
+                player_command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=SPEECH_TIMEOUT_SECONDS,
+            )
+
+
+def speak_linux(
+    message: str,
+    *,
+    language: str = "es",
+    voice_config: dict[str, Any] | None = None,
+) -> None:
+    settings = {} if voice_config is None else voice_config
+    if _text(settings.get("piper_executable")):
+        speak_piper(message, language=language, voice_config=settings)
+        return
+
     speech_dispatcher = shutil.which("spd-say")
     if speech_dispatcher:
         command = [speech_dispatcher, "-w", "-l", language, message]
@@ -848,15 +992,23 @@ def speak_linux(message: str, *, language: str = "es") -> None:
 
 
 def speak(
-    message: str, *, language: str = "es", preferred_voice: str = ""
+    message: str,
+    *,
+    language: str = "es",
+    preferred_voice: str = "",
+    voice_config: dict[str, Any] | None = None,
 ) -> None:
+    settings = {} if voice_config is None else voice_config
     if os.name == "nt":
         speak_windows(
-            message, language=language, preferred_voice=preferred_voice
+            message,
+            language=language,
+            preferred_voice=preferred_voice,
+            volume=_configured_volume(settings),
         )
         return
     if os.name == "posix":
-        speak_linux(message, language=language)
+        speak_linux(message, language=language, voice_config=settings)
         return
     raise RuntimeError(f"La voz local no es compatible con la plataforma {os.name}.")
 
@@ -904,6 +1056,7 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
                 _voice_message(notification, duration, marker, language),
                 language=language,
                 preferred_voice=preferred_voice,
+                voice_config=voice_config,
             )
             voice_status = "sent"
         except Exception as exc:
@@ -1014,7 +1167,10 @@ def main() -> int:
                 else "La notificación por voz de Codex está funcionando."
             )
             speak(
-                message, language=language, preferred_voice=preferred_voice
+                message,
+                language=language,
+                preferred_voice=preferred_voice,
+                voice_config=voice_config,
             )
             return 0
     except (json.JSONDecodeError, TypeError, ValueError) as exc:

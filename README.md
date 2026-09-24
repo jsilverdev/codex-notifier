@@ -32,7 +32,7 @@ log and never stores the prompt or final assistant message.
 - Python 3.10 or later.
 - Codex with an accessible `~/.codex/config.toml`.
 - Windows voice: SAPI, normally included with Windows.
-- Linux voice: `spd-say`, `espeak-ng`, or `espeak`.
+- Linux voice: Piper (recommended), `spd-say`, `espeak-ng`, or `espeak`.
 
 Teams and Discord do not require a local speech engine.
 
@@ -103,6 +103,8 @@ Default locations:
     "quiet_start": "23:00",
     "quiet_end": "07:00",
     "language": "auto",
+    "volume": null,
+    "piper_executable": "",
     "spanish_voice": "",
     "english_voice": ""
   },
@@ -146,9 +148,18 @@ The final assistant message is used only for language detection and is not read
 aloud. The spoken alert contains the project, duration, and chat title when
 available.
 
+On Linux, `spanish_voice` and `english_voice` contain the ONNX model paths.
+`piper_executable` accepts either a command name or a full path. A non-empty
+`piper_executable` enables Piper; when it is empty the notifier tries `spd-say`
+and then `espeak-ng`/`espeak`. On WSL, the WAV is played through PowerShell so
+it uses the Windows audio device directly.
+
+`volume` is optional and accepts values from `0.0` (silent) to `1.0` (full
+volume). `null` preserves the default volume. The option applies to Piper on
+Linux/WSL and SAPI on Windows.
+
 On Windows, `spanish_voice` and `english_voice` can contain part of an installed
 SAPI voice name. Empty values select a matching language voice automatically.
-Linux passes the language code to the installed speech engine.
 
 Set `quiet_start` and `quiet_end` to the same time to disable quiet hours.
 
@@ -186,6 +197,9 @@ set `logging.enabled` to `false` to disable the log.
 python notifier.py voice-test es
 python notifier.py voice-test en
 ```
+
+Each command selects the matching Piper model. Native Linux plays the temporary
+WAV with `paplay`, `pw-play`, `aplay`, or `ffplay`.
 
 These commands play audio; automated tests mock speech and webhook calls.
 

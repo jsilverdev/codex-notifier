@@ -21,6 +21,8 @@
     "quiet_start": "23:00",
     "quiet_end": "07:00",
     "language": "auto",
+    "volume": null,
+    "piper_executable": "",
     "spanish_voice": "",
     "english_voice": ""
   },

@@ -35,7 +35,7 @@ final del asistente.
 - Python 3.10 o posterior.
 - Codex con acceso a `~/.codex/config.toml`.
 - Voz en Windows: SAPI, normalmente incluido con Windows.
-- Voz en Linux: `spd-say`, `espeak-ng` o `espeak`.
+- Voz en Linux: Piper (recomendado), `spd-say`, `espeak-ng` o `espeak`.
 
 Teams y Discord no necesitan un motor de voz local.
 
@@ -107,6 +107,8 @@ canales:
     "quiet_start": "23:00",
     "quiet_end": "07:00",
     "language": "auto",
+    "volume": null,
+    "piper_executable": "",
     "spanish_voice": "",
     "english_voice": ""
   },
@@ -150,10 +152,19 @@ El mensaje final se usa únicamente para detectar el idioma y no se lee en voz
 alta. La alerta pronunciada contiene el proyecto, la duración y el título del
 chat cuando está disponible.
 
+En Linux, `spanish_voice` y `english_voice` son las rutas de los modelos ONNX.
+`piper_executable` acepta el nombre del comando o su ruta completa. Cuando
+`piper_executable` tiene un valor se usa Piper; si está vacío, se intenta
+`spd-say` y después `espeak-ng`/`espeak`. En WSL, el WAV se reproduce mediante
+PowerShell para usar directamente el dispositivo de audio de Windows.
+
+`volume` es opcional y acepta valores entre `0.0` (silencio) y `1.0` (volumen
+completo). `null` conserva el volumen predeterminado. La opción se aplica a
+Piper en Linux/WSL y a SAPI en Windows.
+
 En Windows, `spanish_voice` y `english_voice` pueden contener parte del nombre
 de una voz SAPI instalada. Los valores vacíos seleccionan automáticamente una
-voz del idioma correspondiente. Linux pasa el código del idioma al motor de voz
-instalado.
+voz del idioma correspondiente.
 
 Configura `quiet_start` y `quiet_end` con la misma hora para deshabilitar el
 horario silencioso.
@@ -194,6 +205,9 @@ como `false` para deshabilitar el registro.
 python notifier.py voice-test es
 python notifier.py voice-test en
 ```
+
+Cada comando selecciona el modelo Piper correspondiente al idioma. En Linux
+nativo reproduce el WAV temporal con `paplay`, `pw-play`, `aplay` o `ffplay`.
 
 Estos comandos reproducen audio; las pruebas automatizadas simulan las llamadas
 de voz y webhook.
