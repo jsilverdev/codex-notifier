@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
+import re
 import sys
 import tempfile
 import unittest
-import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -326,10 +329,14 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("No se pudo determinar la duración", message)
         self.assertNotIn("Cambio listo", message)
 
+    @patch("notifier.os.name", "nt")
     @patch("notifier.subprocess.run")
     def test_speech_waits_and_passes_language_and_preferred_voice(self, run) -> None:
         notifier.speak_windows(
-            "Prueba", language="es", preferred_voice="Microsoft Helena Desktop"
+            "Prueba",
+            language="es",
+            preferred_voice="Microsoft Helena Desktop",
+            volume=0.65,
         )
 
         environment = run.call_args.kwargs["env"]
@@ -338,6 +345,7 @@ class NotifierTests(unittest.TestCase):
             environment["CODEX_NOTIFIER_SPEECH_VOICE"],
             "Microsoft Helena Desktop",
         )
+        self.assertEqual(environment["CODEX_NOTIFIER_SPEECH_VOLUME"], "65")
         self.assertTrue(run.call_args.kwargs["check"])
         self.assertEqual(
             run.call_args.kwargs["timeout"], notifier.SPEECH_TIMEOUT_SECONDS
@@ -642,6 +650,129 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.args[0],
             ["/usr/bin/espeak-ng", "-v", "en", "Task complete"],
+        )
+
+    @patch("notifier.tempfile.TemporaryDirectory")
+    @patch("notifier.subprocess.run")
+    @patch("notifier.shutil.which")
+    def test_linux_piper_uses_language_model_and_pw_play(
+        self, which, run, temporary_directory
+    ) -> None:
+        model = Path(self.temp_dir.name) / "es_ES-test-medium.onnx"
+        model.touch()
+        wav = Path(self.temp_dir.name) / "speech.wav"
+        temporary_directory.return_value.__enter__.return_value = self.temp_dir.name
+        which.side_effect = lambda name: {
+            "piper": "/opt/piper/bin/piper",
+            "pw-play": "/usr/bin/pw-play",
+        }.get(name)
+
+        notifier.speak_linux(
+            "Tarea terminada",
+            language="es",
+            voice_config={
+                "piper_executable": "piper",
+                "spanish_voice": str(model),
+            },
+        )
+
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "/opt/piper/bin/piper",
+                "-m",
+                str(model),
+                "-f",
+                str(wav),
+                "--",
+                "Tarea terminada",
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/bin/pw-play", str(wav)],
+        )
+
+    def test_linux_piper_requires_the_voice_for_the_requested_language(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "english_voice"):
+            notifier.speak_linux(
+                "Task complete",
+                language="en",
+                voice_config={"piper_executable": "piper"},
+            )
+
+    @patch("notifier.tempfile.TemporaryDirectory")
+    @patch("notifier.subprocess.run")
+    @patch("notifier.shutil.which")
+    def test_linux_piper_passes_configured_volume(
+        self, which, run, temporary_directory
+    ) -> None:
+        model = Path(self.temp_dir.name) / "es_MX-test-high.onnx"
+        model.touch()
+        temporary_directory.return_value.__enter__.return_value = self.temp_dir.name
+        which.side_effect = lambda name: {
+            "piper": "/opt/piper/bin/piper",
+            "pw-play": "/usr/bin/pw-play",
+        }.get(name)
+
+        notifier.speak_linux(
+            "Tarea terminada",
+            language="es",
+            voice_config={
+                "piper_executable": "piper",
+                "spanish_voice": str(model),
+                "volume": 0.65,
+            },
+        )
+
+        self.assertIn("--volume", run.call_args_list[0].args[0])
+        self.assertIn("0.65", run.call_args_list[0].args[0])
+
+    @patch("notifier.tempfile.TemporaryDirectory")
+    @patch("notifier.subprocess.run")
+    @patch("notifier.shutil.which")
+    def test_linux_piper_uses_windows_audio_in_wsl(
+        self, which, run, temporary_directory
+    ) -> None:
+        model = Path(self.temp_dir.name) / "en_US-test-high.onnx"
+        model.touch()
+        wav = Path(self.temp_dir.name) / "speech.wav"
+        temporary_directory.return_value.__enter__.return_value = self.temp_dir.name
+        which.side_effect = lambda name: {
+            "piper": "/opt/piper/bin/piper",
+            "powershell.exe": "/mnt/c/Windows/System32/powershell.exe",
+            "wslpath": "/usr/bin/wslpath",
+        }.get(name)
+        run.side_effect = [
+            SimpleNamespace(),
+            SimpleNamespace(stdout=r"C:\\wsl.localhost\Debian\tmp\speech.wav" + "\n"),
+            SimpleNamespace(),
+        ]
+
+        notifier.speak_linux(
+            "Task complete",
+            language="en",
+            voice_config={
+                "piper_executable": "piper",
+                "english_voice": str(model),
+            },
+        )
+
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/bin/wslpath", "-w", str(wav)],
+        )
+        powershell_call = run.call_args_list[2]
+        self.assertEqual(
+            powershell_call.args[0][0],
+            "/mnt/c/Windows/System32/powershell.exe",
+        )
+        powershell_script = powershell_call.args[0][-1]
+        self.assertEqual(
+            base64.b64decode(
+                re.search(r"FromBase64String\('([^']+)'\)", powershell_script).group(1)
+            ).decode("utf-8"),
+            r"C:\\wsl.localhost\Debian\tmp\speech.wav",
         )
 
 
