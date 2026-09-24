@@ -1,64 +1,49 @@
 # Codex Notifier
 
-Notificador de finalización para Codex en Windows y Linux. Envía una Adaptive
-Card a Microsoft Teams, un embed a Discord y puede reproducir un aviso por voz
-cuando el turno supera los umbrales configurados.
+[Versión en español](README.es.md)
 
-No requiere paquetes de `pip`; usa únicamente Python 3 y herramientas del
-sistema operativo.
+Completion notifications for Codex on Windows and Linux. It can send an
+Adaptive Card to Microsoft Teams, post an embed to Discord, and play a local
+voice alert after a configurable amount of time.
 
-## Comportamiento predeterminado
+Codex Notifier uses only the Python standard library. Channel settings live in
+one JSON file; no duplicated environment-variable configuration is required.
 
-La configuración inicial se copia literalmente desde `config.example.json`:
+## Default behavior
 
-- Teams desactivado hasta añadir un webhook y cambiar `enabled` a `true`.
-- Teams a partir de 300 segundos.
-- Los resúmenes largos conservan el inicio y los últimos 600 caracteres dentro
-  de un máximo de 1.800 caracteres.
-- Discord desactivado hasta añadir un webhook y cambiar `enabled` a `true`.
-- Discord a partir de 300 segundos.
-- Voz a partir de 30 segundos y también cuando no se puede determinar la
-  duración.
-- La voz añade el título del chat cuando Codex lo proporciona.
-- Silencio de voz entre las 23:00 y las 07:00.
-- Idioma de voz automático según el mensaje final.
-- Voz, Teams y Discord se ejecutan de forma independiente; la voz espera a que
-  el motor termine para evitar que Codex cierre el proceso antes de tiempo.
-- Log diario de trazabilidad con siete días de retención.
-- Nunca se guarda el prompt; el estado temporal contiene solo identificadores,
-  directorio y hora de inicio.
+The installer copies `config.example.json` when no local configuration exists.
 
-## Requisitos
+| Channel | Enabled | Minimum duration | Notify if duration is unknown |
+| --- | --- | ---: | --- |
+| Teams | No | 300 seconds | No |
+| Discord | No | 300 seconds | No |
+| Voice | Yes | 30 seconds | Yes |
 
-- Python 3.10 o posterior.
-- Codex instalado y un `~/.codex/config.toml` accesible.
-- Windows: SAPI, incluido normalmente con Windows.
-- Linux, solo para voz: `spd-say` (Speech Dispatcher), `espeak-ng` o `espeak`.
-  Teams y Discord funcionan aunque no haya motor de voz.
+Voice alerts are muted from 23:00 to 07:00. They mention the project, duration,
+and chat title when Codex provides one. Teams and Discord include the final
+assistant message as a bounded summary.
 
-`mise` no es obligatorio. El instalador busca Python 3 en este orden:
+Each channel runs independently: a failed webhook does not prevent voice or the
+other webhook from running. The notifier keeps a privacy-conscious daily trace
+log and never stores the prompt or final assistant message.
 
-1. `python3`.
-2. En Windows, `py -3`.
-3. `python` si realmente es Python 3.
-4. `mise exec -- python` si no encontró un Python independiente.
-5. El intérprete con el que se inició `install.py`.
+## Requirements
 
-## Instalación única
+- Python 3.10 or later.
+- Codex with an accessible `~/.codex/config.toml`.
+- Windows voice: SAPI, normally included with Windows.
+- Linux voice: `spd-say`, `espeak-ng`, or `espeak`.
 
-Hay un único instalador multiplataforma: `install.py`.
+Teams and Discord do not require a local speech engine.
+
+## Install
+
+Run the cross-platform installer once:
 
 Windows:
 
 ```powershell
 python install.py
-```
-
-También puedes iniciarlo con:
-
-```powershell
-py -3 install.py
-mise exec -- python install.py
 ```
 
 Linux:
@@ -67,66 +52,46 @@ Linux:
 python3 install.py
 ```
 
-Si Python solo está administrado por mise:
+If Python is managed only by mise:
 
-```bash
+```text
 mise exec -- python install.py
 ```
 
-El instalador realiza las tres tareas:
+The installer:
 
-1. Configura `notify` en `~/.codex/config.toml`.
-2. Añade o actualiza el hook `UserPromptSubmit` en `~/.codex/hooks.json`, sin
-   eliminar otros hooks.
-3. Si todavía no existe, copia `config.example.json` a la ubicación local de
-   configuración.
+1. Configures Codex `notify` in `~/.codex/config.toml`.
+2. Adds or updates the `UserPromptSubmit` hook in `~/.codex/hooks.json` without
+   removing unrelated hooks.
+3. Copies `config.example.json` to the local configuration path when that file
+   does not already exist.
 
-Los archivos de Codex existentes reciben una copia `.bak` antes de modificarse.
-La configuración local existente nunca se sobrescribe automáticamente. Después
-de cambiar el hook, abre un chat nuevo y usa `/hooks` para revisarlo y confiar
-en él.
+Existing Codex files are backed up before modification. An existing notifier
+configuration is preserved unless `--force-config` is explicitly used. After
+installing or changing the hook, open a new chat and use `/hooks` to review and
+trust it.
 
-Opciones útiles:
-
-```text
---codex-home RUTA          CODEX_HOME alternativo
---config-path RUTA         config.json alternativo
---python-executable RUTA   Python 3 específico para notify y el hook
---force-config             reemplaza config.json desde el ejemplo, con backup
-```
-
-Ten cuidado con `--force-config`: reemplaza el webhook y las preferencias
-locales por los valores del ejemplo.
-
-## Ubicación de la configuración
-
-Windows:
+Installer options:
 
 ```text
-%LOCALAPPDATA%\CodexNotifier\config.json
+--codex-home PATH          use a different CODEX_HOME
+--config-path PATH         use a different notifier config.json
+--python-executable PATH   use a specific Python 3 executable
+--force-config             replace config.json from the example, with backup
 ```
 
-Linux:
+`--force-config` replaces local webhook URLs and preferences with the example
+defaults.
 
-```text
-$XDG_CONFIG_HOME/codex-notifier/config.json
-```
+## Configuration
 
-Si `XDG_CONFIG_HOME` no existe:
+Default locations:
 
-```text
-~/.config/codex-notifier/config.json
-```
+- Windows: `%LOCALAPPDATA%\CodexNotifier\config.json`
+- Linux with `XDG_CONFIG_HOME`: `$XDG_CONFIG_HOME/codex-notifier/config.json`
+- Other Linux systems: `~/.config/codex-notifier/config.json`
 
-Se puede usar otra ruta definiendo `CODEX_NOTIFIER_CONFIG` o pasando
-`--config-path` al instalar.
-
-El instalador conserva una configuración local existente. Si actualizas desde
-una versión anterior, agrega manualmente la sección `discord` y cambia las
-opciones de `voice` mostradas abajo; `--force-config` reemplaza el archivo
-completo y puede eliminar un webhook que ya tengas configurado.
-
-## Configuración
+`config.json` is the source of truth for all channel behavior:
 
 ```json
 {
@@ -162,121 +127,99 @@ completo y puede eliminar un webhook que ya tengas configurado.
 }
 ```
 
-Para activar Teams, completa ambos valores:
+`minimum_seconds` is inclusive. `notify_when_duration_unknown` bypasses only
+the duration threshold: the channel must still be enabled, webhook channels
+still need a valid HTTPS URL, and voice still respects quiet hours.
+
+The installer does not merge new keys into an existing configuration. When
+upgrading, compare your local file with `config.example.json` and add any new
+keys manually.
+
+### Teams and Discord
+
+Enable a webhook channel and provide its URL in the same section:
 
 ```json
 "enabled": true,
-"webhook_url": "https://tu-webhook"
+"webhook_url": "https://your-webhook"
 ```
 
-Discord se activa de la misma manera dentro de su propia sección. Teams y
-Discord comparten el transporte HTTP, los reintentos y los datos de contexto,
-pero usan formatos distintos: Adaptive Card para Teams y embed para Discord.
+Webhook URLs are credentials. Keep the local configuration out of version
+control and rotate a URL if it is exposed.
 
-Los webhooks son credenciales. El archivo local está fuera del repositorio y
-no debe compartirse ni añadirse a Git.
+Teams uses an Adaptive Card. Its summary preserves the beginning and a
+configurable tail when truncation is required; `summary_max_chars` is bounded
+between 100 and 6,000 characters.
 
-`notify_when_duration_unknown` omite solamente el umbral cuando no existe un
-marcador de inicio. El canal todavía debe estar habilitado, el webhook debe ser
-válido y la voz continúa respetando el horario silencioso.
+Discord uses an embed, requests delivery confirmation, disables mentions from
+summary text, and caps the description at 4,096 characters.
 
-Cuando el mensaje final supera `summary_max_chars`, la card muestra el comienzo,
-un aviso con el número de caracteres omitidos y los últimos
-`summary_tail_chars`. El máximo configurable se mantiene entre 100 y 6.000
-caracteres para dejar margen bajo el límite total de 28 KB de Teams. Si la
-configuración local existente no incluye estas propiedades, se aplican los
-valores predeterminados de 1.800 y 600.
+### Voice
 
-En Discord, `summary_max_chars` se limita a 4.096 caracteres y el notifier
-desactiva las menciones para que el resumen no genere avisos como `@everyone`.
+`language` accepts:
 
-`language` admite:
+- `auto`: infer Spanish or English from the final assistant message.
+- `es`: always speak Spanish.
+- `en`: always speak English.
 
-- `auto`: estima español o inglés usando el mensaje final.
-- `es`: siempre español.
-- `en`: siempre inglés.
+The final assistant message is used only for language detection and is not read
+aloud. The spoken alert contains the project, duration, and chat title when
+available.
 
-En Windows, `spanish_voice` y `english_voice` pueden contener parte del nombre
-de una voz SAPI instalada. Si están vacíos, se elige automáticamente una voz del
-idioma. Linux utiliza el código de idioma con `spd-say` o `espeak`.
+On Windows, `spanish_voice` and `english_voice` can contain part of an installed
+SAPI voice name. Empty values select a matching language voice automatically.
+Linux passes the language code to the installed speech engine.
 
-## Log de trazabilidad
+Set `quiet_start` and `quiet_end` to the same time to disable quiet hours.
 
-El notifier escribe un archivo JSON Lines por día en el subdirectorio `logs`
-de su directorio de estado. Cada entrada contiene únicamente fecha y hora, ID
-del chat, duración y estado de Teams, Discord y voz. Los errores se recortan y
-los webhooks se redactan; nunca se guardan el prompt, la respuesta, el proyecto
-ni la URL del webhook.
+## Path overrides
 
-Windows:
+Two environment variables remain because they select files rather than
+duplicate channel settings:
 
-```text
-%LOCALAPPDATA%\CodexNotifier\logs\notifier-AAAA-MM-DD.jsonl
-```
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_NOTIFIER_CONFIG` | Override the `config.json` path |
+| `CODEX_NOTIFIER_STATE_DIR` | Override the temporary state and log directory |
 
-Linux:
+The installer also accepts `--config-path`, which is usually clearer for a
+one-time installation.
 
-```text
-$XDG_STATE_HOME/codex-notifier/logs/notifier-AAAA-MM-DD.jsonl
-```
+## Trace log
 
-Si `XDG_STATE_HOME` no existe, se usa
-`~/.local/state/codex-notifier/logs`. `retention_days` indica cuántos archivos
-diarios se conservan, entre 1 y 365. La limpieza se realiza al escribir una
-nueva entrada y puede desactivarse todo el log con `logging.enabled=false`.
+The notifier writes one JSON Lines file per day under its state directory:
 
-## Probar la voz
+- Windows: `%LOCALAPPDATA%\CodexNotifier\logs\notifier-YYYY-MM-DD.jsonl`
+- Linux with `XDG_STATE_HOME`:
+  `$XDG_STATE_HOME/codex-notifier/logs/notifier-YYYY-MM-DD.jsonl`
+- Other Linux systems:
+  `~/.local/state/codex-notifier/logs/notifier-YYYY-MM-DD.jsonl`
 
-Windows:
+Entries contain only the timestamp, chat ID, duration, channel statuses, and
+bounded error details. Webhook URLs are redacted. Prompts, responses, and
+project paths are not logged. `retention_days` is bounded between 1 and 365;
+set `logging.enabled` to `false` to disable the log.
+
+## Test voice
 
 ```powershell
-python .\notifier.py voice-test es
-python .\notifier.py voice-test en
+python notifier.py voice-test es
+python notifier.py voice-test en
 ```
 
-Linux:
+Use your system's Python command if it differs. These commands play audio;
+automated tests mock speech and webhook calls.
 
-```bash
-python3 ./notifier.py voice-test es
-python3 ./notifier.py voice-test en
-```
-
-Estos comandos reproducen sonido. Las pruebas automatizadas no reproducen audio
-ni llaman al webhook.
-
-## Variables de entorno opcionales
-
-El archivo JSON tiene prioridad. Si una propiedad no existe, se admiten estos
-fallbacks:
-
-| Variable | Predeterminado | Uso |
-| --- | ---: | --- |
-| `CODEX_TEAMS_WEBHOOK_URL` | vacío | Webhook alternativo |
-| `CODEX_NOTIFIER_TEAMS_ENABLED` | según exista webhook | Activa Teams |
-| `CODEX_NOTIFIER_TEAMS_MIN_SECONDS` | `300` | Umbral de Teams |
-| `CODEX_NOTIFIER_TEAMS_NOTIFY_UNKNOWN_DURATION` | `0` | Teams sin duración conocida |
-| `CODEX_DISCORD_WEBHOOK_URL` | vacío | Webhook alternativo de Discord |
-| `CODEX_NOTIFIER_DISCORD_ENABLED` | según exista webhook | Activa Discord |
-| `CODEX_NOTIFIER_DISCORD_MIN_SECONDS` | `300` | Umbral de Discord |
-| `CODEX_NOTIFIER_DISCORD_NOTIFY_UNKNOWN_DURATION` | `0` | Discord sin duración conocida |
-| `CODEX_NOTIFIER_VOICE_ENABLED` | `1` | Activa la voz |
-| `CODEX_NOTIFIER_VOICE_MIN_SECONDS` | `30` | Umbral de voz |
-| `CODEX_NOTIFIER_VOICE_NOTIFY_UNKNOWN_DURATION` | `1` | Voz sin duración conocida |
-| `CODEX_NOTIFIER_QUIET_START` | `23:00` | Inicio del silencio |
-| `CODEX_NOTIFIER_QUIET_END` | `07:00` | Fin del silencio |
-| `CODEX_NOTIFIER_STATE_DIR` | dependiente del SO | Estado temporal |
-| `CODEX_NOTIFIER_CONFIG` | dependiente del SO | Ruta de configuración |
-
-## Pruebas
+## Run tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-## Funcionamiento
+## How it works
 
-`UserPromptSubmit` registra la hora de inicio y `notify` recibe el evento
-`agent-turn-complete`. Ambos se correlacionan mediante `turn_id`; al terminar se
-calcula la duración, se consume el marcador y se aplican los canales y el
-horario configurados. Si el marcador no existe, cada canal aplica su opción
-`notify_when_duration_unknown`.
+The `UserPromptSubmit` hook records a start marker without storing the prompt.
+Codex later invokes `notify` with an `agent-turn-complete` event. The notifier
+matches both events by `turn_id`, calculates and consumes the duration marker,
+then evaluates each channel independently. When the marker is missing, each
+channel follows its own `notify_when_duration_unknown` setting.

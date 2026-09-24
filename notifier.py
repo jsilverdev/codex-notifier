@@ -29,19 +29,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
-WEBHOOK_ENV = "CODEX_TEAMS_WEBHOOK_URL"
-TEAMS_ENABLED_ENV = "CODEX_NOTIFIER_TEAMS_ENABLED"
-TEAMS_MIN_SECONDS_ENV = "CODEX_NOTIFIER_TEAMS_MIN_SECONDS"
-TEAMS_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_TEAMS_NOTIFY_UNKNOWN_DURATION"
-DISCORD_WEBHOOK_ENV = "CODEX_DISCORD_WEBHOOK_URL"
-DISCORD_ENABLED_ENV = "CODEX_NOTIFIER_DISCORD_ENABLED"
-DISCORD_MIN_SECONDS_ENV = "CODEX_NOTIFIER_DISCORD_MIN_SECONDS"
-DISCORD_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_DISCORD_NOTIFY_UNKNOWN_DURATION"
-VOICE_ENABLED_ENV = "CODEX_NOTIFIER_VOICE_ENABLED"
-VOICE_MIN_SECONDS_ENV = "CODEX_NOTIFIER_VOICE_MIN_SECONDS"
-VOICE_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_VOICE_NOTIFY_UNKNOWN_DURATION"
-QUIET_START_ENV = "CODEX_NOTIFIER_QUIET_START"
-QUIET_END_ENV = "CODEX_NOTIFIER_QUIET_END"
 STATE_DIR_ENV = "CODEX_NOTIFIER_STATE_DIR"
 CONFIG_PATH_ENV = "CODEX_NOTIFIER_CONFIG"
 
@@ -151,20 +138,6 @@ def _summary_excerpt(value: str, limit: int, tail_chars: int) -> str:
     return _truncate(value, limit)
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _env_seconds(name: str, default: float) -> float:
-    try:
-        return max(0.0, float(os.environ.get(name, default)))
-    except (TypeError, ValueError):
-        return default
-
-
 def default_config_path(
     *,
     platform_name: str | None = None,
@@ -210,22 +183,19 @@ def _config_bool(
     config: dict[str, Any],
     section_name: str,
     key: str,
-    env_name: str | None,
     default: bool,
 ) -> bool:
     value = _config_section(config, section_name).get(key)
-    if isinstance(value, bool):
-        return value
-    return _env_bool(env_name, default) if env_name else default
+    return value if isinstance(value, bool) else default
 
 
 def _config_seconds(
-    config: dict[str, Any], section_name: str, key: str, env_name: str, default: float
+    config: dict[str, Any], section_name: str, key: str, default: float
 ) -> float:
     value = _config_section(config, section_name).get(key)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return max(0.0, float(value))
-    return _env_seconds(env_name, default)
+    return default
 
 
 def _config_int(
@@ -248,17 +218,10 @@ def _config_text(
     config: dict[str, Any],
     section_name: str,
     key: str,
-    env_name: str | None,
     default: str = "",
 ) -> str:
     value = _config_section(config, section_name).get(key)
-    if isinstance(value, str):
-        return value.strip()
-    if env_name:
-        environment_value = os.environ.get(env_name)
-        if environment_value is not None:
-            return environment_value.strip()
-    return default
+    return value.strip() if isinstance(value, str) else default
 
 
 def default_state_dir(
@@ -323,7 +286,7 @@ def write_trace_log(
     discord_error: str = "",
     voice_error: str = "",
 ) -> None:
-    if not _config_bool(config, "logging", "enabled", None, True):
+    if not _config_bool(config, "logging", "enabled", True):
         return
     retention_days = _config_int(
         config,
@@ -439,7 +402,6 @@ def is_quiet_time(moment: datetime, config: dict[str, Any] | None = None) -> boo
             settings,
             "voice",
             "quiet_start",
-            QUIET_START_ENV,
             DEFAULT_QUIET_START,
         ),
         DEFAULT_QUIET_START,
@@ -449,7 +411,6 @@ def is_quiet_time(moment: datetime, config: dict[str, Any] | None = None) -> boo
             settings,
             "voice",
             "quiet_end",
-            QUIET_END_ENV,
             DEFAULT_QUIET_END,
         ),
         DEFAULT_QUIET_END,
@@ -469,17 +430,16 @@ def notification_channels(
 ) -> tuple[bool, bool, bool]:
     settings = load_config() if config is None else config
     teams_webhook_configured = bool(
-        _config_text(settings, "teams", "webhook_url", WEBHOOK_ENV)
+        _config_text(settings, "teams", "webhook_url")
     )
     discord_webhook_configured = bool(
-        _config_text(settings, "discord", "webhook_url", DISCORD_WEBHOOK_ENV)
+        _config_text(settings, "discord", "webhook_url")
     )
     teams_duration_due = (
         _config_bool(
             settings,
             "teams",
             "notify_when_duration_unknown",
-            TEAMS_UNKNOWN_DURATION_ENV,
             False,
         )
         if duration_seconds is None
@@ -488,7 +448,6 @@ def notification_channels(
             settings,
             "teams",
             "minimum_seconds",
-            TEAMS_MIN_SECONDS_ENV,
             DEFAULT_TEAMS_MIN_SECONDS,
         )
     )
@@ -497,7 +456,6 @@ def notification_channels(
             settings,
             "discord",
             "notify_when_duration_unknown",
-            DISCORD_UNKNOWN_DURATION_ENV,
             False,
         )
         if duration_seconds is None
@@ -506,7 +464,6 @@ def notification_channels(
             settings,
             "discord",
             "minimum_seconds",
-            DISCORD_MIN_SECONDS_ENV,
             DEFAULT_DISCORD_MIN_SECONDS,
         )
     )
@@ -515,7 +472,6 @@ def notification_channels(
             settings,
             "voice",
             "notify_when_duration_unknown",
-            VOICE_UNKNOWN_DURATION_ENV,
             True,
         )
         if duration_seconds is None
@@ -524,22 +480,20 @@ def notification_channels(
             settings,
             "voice",
             "minimum_seconds",
-            VOICE_MIN_SECONDS_ENV,
             DEFAULT_VOICE_MIN_SECONDS,
         )
     )
     teams = _config_bool(
-        settings, "teams", "enabled", TEAMS_ENABLED_ENV, teams_webhook_configured
+        settings, "teams", "enabled", teams_webhook_configured
     ) and teams_duration_due
     discord = _config_bool(
         settings,
         "discord",
         "enabled",
-        DISCORD_ENABLED_ENV,
         discord_webhook_configured,
     ) and discord_duration_due
     voice = (
-        _config_bool(settings, "voice", "enabled", VOICE_ENABLED_ENV, True)
+        _config_bool(settings, "voice", "enabled", True)
         and voice_duration_due
         and not is_quiet_time(moment, settings)
     )
@@ -958,9 +912,7 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
             print(f"No se pudo reproducir el aviso de voz: {exc}", file=sys.stderr)
 
     if teams_due:
-        webhook_url = _config_text(
-            config, "teams", "webhook_url", WEBHOOK_ENV
-        )
+        webhook_url = _config_text(config, "teams", "webhook_url")
         if webhook_url and urlsplit(webhook_url).scheme == "https":
             try:
                 send_teams_notification(
@@ -982,9 +934,7 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
             print(teams_error, file=sys.stderr)
 
     if discord_due:
-        webhook_url = _config_text(
-            config, "discord", "webhook_url", DISCORD_WEBHOOK_ENV
-        )
+        webhook_url = _config_text(config, "discord", "webhook_url")
         if webhook_url and urlsplit(webhook_url).scheme == "https":
             try:
                 send_discord_notification(

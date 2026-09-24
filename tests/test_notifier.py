@@ -24,15 +24,6 @@ class NotifierTests(unittest.TestCase):
             {
                 notifier.STATE_DIR_ENV: self.temp_dir.name,
                 notifier.CONFIG_PATH_ENV: str(Path(self.temp_dir.name) / "config.json"),
-                notifier.TEAMS_ENABLED_ENV: "1",
-                notifier.TEAMS_MIN_SECONDS_ENV: "300",
-                notifier.DISCORD_ENABLED_ENV: "0",
-                notifier.DISCORD_MIN_SECONDS_ENV: "300",
-                notifier.VOICE_ENABLED_ENV: "1",
-                notifier.VOICE_MIN_SECONDS_ENV: "30",
-                notifier.VOICE_UNKNOWN_DURATION_ENV: "1",
-                notifier.QUIET_START_ENV: "23:00",
-                notifier.QUIET_END_ENV: "07:00",
             },
             clear=False,
         )
@@ -77,10 +68,9 @@ class NotifierTests(unittest.TestCase):
         self.assertTrue(voice)
 
     def test_teams_defaults_to_disabled_without_webhook(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            teams, _, _ = notifier.notification_channels(
-                1000, datetime(2026, 9, 23, 12, 0), {}
-            )
+        teams, _, _ = notifier.notification_channels(
+            1000, datetime(2026, 9, 23, 12, 0), {}
+        )
 
         self.assertFalse(teams)
 
@@ -93,16 +83,30 @@ class NotifierTests(unittest.TestCase):
         self.assertTrue(voice)
 
     def test_long_turn_uses_teams_and_voice(self) -> None:
+        config = {
+            "teams": {
+                "enabled": True,
+                "minimum_seconds": 300,
+                "webhook_url": "https://example.invalid/teams",
+            }
+        }
         teams, discord, voice = notifier.notification_channels(
-            301, datetime(2026, 9, 23, 12, 0)
+            301, datetime(2026, 9, 23, 12, 0), config
         )
         self.assertTrue(teams)
         self.assertFalse(discord)
         self.assertTrue(voice)
 
     def test_quiet_hours_only_suppress_voice(self) -> None:
+        config = {
+            "teams": {
+                "enabled": True,
+                "minimum_seconds": 300,
+                "webhook_url": "https://example.invalid/teams",
+            }
+        }
         teams, discord, voice = notifier.notification_channels(
-            301, datetime(2026, 9, 23, 23, 0)
+            301, datetime(2026, 9, 23, 23, 0), config
         )
         self.assertTrue(teams)
         self.assertFalse(discord)
@@ -241,7 +245,7 @@ class NotifierTests(unittest.TestCase):
         self.assertTrue(summary.startswith("abcdefghij"))
         self.assertFalse(summary.endswith("abcdefghij"))
 
-    def test_config_file_takes_precedence_over_environment(self) -> None:
+    def test_config_file_controls_notification_channels(self) -> None:
         config = {
             "teams": {"enabled": True, "minimum_seconds": 10},
             "voice": {
@@ -259,6 +263,20 @@ class NotifierTests(unittest.TestCase):
 
         self.assertTrue(teams)
         self.assertFalse(discord)
+        self.assertTrue(voice)
+
+    def test_channel_environment_variables_are_ignored(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_NOTIFIER_VOICE_ENABLED": "0",
+                "CODEX_NOTIFIER_VOICE_MIN_SECONDS": "999",
+            },
+        ):
+            _, _, voice = notifier.notification_channels(
+                30, datetime(2026, 9, 23, 12, 0), {}
+            )
+
         self.assertTrue(voice)
 
     def test_detects_spanish_and_english(self) -> None:
