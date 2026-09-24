@@ -26,8 +26,11 @@ class NotifierTests(unittest.TestCase):
                 notifier.CONFIG_PATH_ENV: str(Path(self.temp_dir.name) / "config.json"),
                 notifier.TEAMS_ENABLED_ENV: "1",
                 notifier.TEAMS_MIN_SECONDS_ENV: "300",
+                notifier.DISCORD_ENABLED_ENV: "0",
+                notifier.DISCORD_MIN_SECONDS_ENV: "300",
                 notifier.VOICE_ENABLED_ENV: "1",
-                notifier.VOICE_MIN_SECONDS_ENV: "65",
+                notifier.VOICE_MIN_SECONDS_ENV: "30",
+                notifier.VOICE_UNKNOWN_DURATION_ENV: "1",
                 notifier.QUIET_START_ENV: "23:00",
                 notifier.QUIET_END_ENV: "07:00",
             },
@@ -59,39 +62,87 @@ class NotifierTests(unittest.TestCase):
         self.assertFalse(notifier._marker_path("turn-1").exists())
 
     def test_short_turn_has_no_channels(self) -> None:
-        teams, voice = notifier.notification_channels(
-            64, datetime(2026, 9, 23, 12, 0)
+        teams, discord, voice = notifier.notification_channels(
+            29, datetime(2026, 9, 23, 12, 0)
         )
         self.assertFalse(teams)
+        self.assertFalse(discord)
         self.assertFalse(voice)
+
+    def test_voice_starts_at_thirty_seconds(self) -> None:
+        _, _, voice = notifier.notification_channels(
+            30, datetime(2026, 9, 23, 12, 0)
+        )
+
+        self.assertTrue(voice)
 
     def test_teams_defaults_to_disabled_without_webhook(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            teams, _ = notifier.notification_channels(
+            teams, _, _ = notifier.notification_channels(
                 1000, datetime(2026, 9, 23, 12, 0), {}
             )
 
         self.assertFalse(teams)
 
     def test_medium_turn_only_uses_voice(self) -> None:
-        teams, voice = notifier.notification_channels(
+        teams, discord, voice = notifier.notification_channels(
             180, datetime(2026, 9, 23, 12, 0)
         )
         self.assertFalse(teams)
+        self.assertFalse(discord)
         self.assertTrue(voice)
 
     def test_long_turn_uses_teams_and_voice(self) -> None:
-        teams, voice = notifier.notification_channels(
+        teams, discord, voice = notifier.notification_channels(
             301, datetime(2026, 9, 23, 12, 0)
         )
         self.assertTrue(teams)
+        self.assertFalse(discord)
         self.assertTrue(voice)
 
     def test_quiet_hours_only_suppress_voice(self) -> None:
-        teams, voice = notifier.notification_channels(
+        teams, discord, voice = notifier.notification_channels(
             301, datetime(2026, 9, 23, 23, 0)
         )
         self.assertTrue(teams)
+        self.assertFalse(discord)
+        self.assertFalse(voice)
+
+    def test_unknown_duration_notifies_voice_only_by_default(self) -> None:
+        teams, discord, voice = notifier.notification_channels(
+            None, datetime(2026, 9, 23, 12, 0), {}
+        )
+
+        self.assertFalse(teams)
+        self.assertFalse(discord)
+        self.assertTrue(voice)
+
+    def test_unknown_duration_options_are_independent(self) -> None:
+        config = {
+            "teams": {
+                "enabled": True,
+                "notify_when_duration_unknown": True,
+                "webhook_url": "https://example.invalid/teams",
+            },
+            "discord": {
+                "enabled": True,
+                "notify_when_duration_unknown": True,
+                "webhook_url": "https://example.invalid/discord",
+            },
+            "voice": {
+                "enabled": True,
+                "notify_when_duration_unknown": False,
+                "quiet_start": "00:00",
+                "quiet_end": "00:00",
+            },
+        }
+
+        teams, discord, voice = notifier.notification_channels(
+            None, datetime(2026, 9, 23, 12, 0), config
+        )
+
+        self.assertTrue(teams)
+        self.assertTrue(discord)
         self.assertFalse(voice)
 
     def test_payload_contains_duration_and_summary(self) -> None:
@@ -108,6 +159,53 @@ class NotifierTests(unittest.TestCase):
         facts = content["body"][1]["facts"]
         self.assertIn({"title": "Duración", "value": "3 min 5 s"}, facts)
         self.assertEqual(content["body"][-1]["text"], "Listo.")
+
+    def test_discord_payload_contains_context_and_unknown_duration(self) -> None:
+        payload = notifier.build_discord_payload(
+            {
+                "thread-id": "thread-1",
+                "thread-title": "Agregar Discord",
+                "cwd": r"C:\work\demo",
+                "last-assistant-message": "Se agregó el nuevo canal.",
+            },
+            None,
+            {},
+        )
+
+        embed = payload["embeds"][0]
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(embed["description"], "Se agregó el nuevo canal.")
+        self.assertIn(
+            {"name": "Duración", "value": "No disponible", "inline": True},
+            embed["fields"],
+        )
+        self.assertIn(
+            {"name": "Proyecto", "value": "demo", "inline": True},
+            embed["fields"],
+        )
+
+    def test_discord_summary_respects_embed_description_limit(self) -> None:
+        payload = notifier.build_discord_payload(
+            {"last-assistant-message": "a" * 5000},
+            300,
+            {},
+            {"discord": {"summary_max_chars": 5000}},
+        )
+
+        self.assertEqual(
+            len(payload["embeds"][0]["description"]),
+            notifier.MAX_DISCORD_SUMMARY_MAX_CHARS,
+        )
+
+    @patch("notifier._send_webhook_notification")
+    def test_discord_requests_delivery_confirmation(self, send_webhook) -> None:
+        notifier.send_discord_notification(
+            "https://discord.invalid/hook?thread_id=123", {"embeds": []}
+        )
+
+        sent_url = send_webhook.call_args.args[1]
+        self.assertIn("thread_id=123", sent_url)
+        self.assertIn("wait=true", sent_url)
 
     def test_long_summary_keeps_configured_beginning_and_end(self) -> None:
         message = "INICIO-" + ("x" * 180) + "-FINAL"
@@ -155,11 +253,12 @@ class NotifierTests(unittest.TestCase):
         }
         notifier.config_path().write_text(json.dumps(config), encoding="utf-8")
 
-        teams, voice = notifier.notification_channels(
+        teams, discord, voice = notifier.notification_channels(
             30, datetime(2026, 9, 23, 12, 0)
         )
 
         self.assertTrue(teams)
+        self.assertFalse(discord)
         self.assertTrue(voice)
 
     def test_detects_spanish_and_english(self) -> None:
@@ -182,6 +281,32 @@ class NotifierTests(unittest.TestCase):
             "finished the task",
             notifier._voice_message(notification, 301, marker, "en"),
         )
+
+    def test_voice_message_adds_the_chat_title_without_the_description(self) -> None:
+        message = notifier._voice_message(
+            {
+                "cwd": r"C:\work\demo",
+                "thread-title": "Agregar notificaciones de Discord",
+                "last-assistant-message": "Descripción que no debe leerse.",
+            },
+            45,
+            {},
+            "es",
+        )
+
+        self.assertIn("Tarea: Agregar notificaciones de Discord.", message)
+        self.assertNotIn("Descripción que no debe leerse", message)
+
+    def test_voice_message_explains_unknown_duration(self) -> None:
+        message = notifier._voice_message(
+            {"cwd": r"C:\work\demo", "last-assistant-message": "Cambio listo."},
+            None,
+            {},
+            "es",
+        )
+
+        self.assertIn("No se pudo determinar la duración", message)
+        self.assertNotIn("Cambio listo", message)
 
     @patch("notifier.subprocess.run")
     def test_speech_waits_and_passes_language_and_preferred_voice(self, run) -> None:
@@ -308,6 +433,52 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("[redacted]", entry["teams_error"])
         self.assertNotIn("webhook-token", entry["teams_error"])
 
+    @patch("notifier.send_discord_notification")
+    def test_completion_sends_discord_embed(self, send_discord) -> None:
+        config = {
+            "teams": {"enabled": False},
+            "discord": {
+                "enabled": True,
+                "minimum_seconds": 30,
+                "webhook_url": "https://discord.invalid/webhook-token",
+            },
+            "voice": {"enabled": False},
+        }
+        notifier.config_path().write_text(json.dumps(config), encoding="utf-8")
+        notifier.record_start(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "thread-discord",
+                "turn_id": "turn-discord",
+                "cwd": r"C:\work\demo",
+            },
+            now=100,
+        )
+
+        notifier.handle_completion(
+            {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-discord",
+                "turn-id": "turn-discord",
+                "cwd": r"C:\work\demo",
+                "last-assistant-message": "Discord listo.",
+            },
+            now=140,
+        )
+
+        self.assertEqual(
+            send_discord.call_args.args[0],
+            "https://discord.invalid/webhook-token",
+        )
+        self.assertEqual(
+            send_discord.call_args.args[1]["embeds"][0]["description"],
+            "Discord listo.",
+        )
+        log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
+        entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["discord_status"], "sent")
+        self.assertNotIn("discord.invalid", json.dumps(entry))
+
     @patch("notifier.speak")
     @patch("notifier.send_teams_notification")
     def test_voice_failure_does_not_prevent_teams(self, send_teams, speak) -> None:
@@ -352,21 +523,41 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(entry["voice_status"], "failed")
         self.assertIn("SAPI no respondió", entry["voice_error"])
 
-    def test_missing_start_marker_is_logged(self) -> None:
+    @patch("notifier.speak")
+    def test_missing_start_marker_notifies_voice_and_is_logged(self, speak) -> None:
+        notifier.config_path().write_text(
+            json.dumps(
+                {
+                    "voice": {
+                        "enabled": True,
+                        "notify_when_duration_unknown": True,
+                        "quiet_start": "00:00",
+                        "quiet_end": "00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         notifier.handle_completion(
             {
                 "type": "agent-turn-complete",
                 "thread-id": "thread-without-marker",
                 "turn-id": "missing-turn",
+                "last-assistant-message": "La tarea quedó lista.",
             }
         )
 
+        speak.assert_called_once()
+        self.assertIn(
+            "No se pudo determinar la duración", speak.call_args.args[0]
+        )
         log_path = next(notifier.log_dir().glob("notifier-*.jsonl"))
         entry = json.loads(log_path.read_text(encoding="utf-8"))
         self.assertEqual(entry["chat_id"], "thread-without-marker")
         self.assertIsNone(entry["duration_seconds"])
-        self.assertEqual(entry["teams_status"], "not_evaluated")
-        self.assertEqual(entry["voice_status"], "not_evaluated")
+        self.assertEqual(entry["teams_status"], "not_due")
+        self.assertEqual(entry["discord_status"], "not_due")
+        self.assertEqual(entry["voice_status"], "sent")
 
     def test_daily_log_cleanup_honors_retention(self) -> None:
         directory = notifier.log_dir()
@@ -382,6 +573,7 @@ class NotifierTests(unittest.TestCase):
             chat_id="thread-log",
             duration_seconds=129.25,
             teams_status="not_due",
+            discord_status="not_due",
             voice_status="sent",
         )
 

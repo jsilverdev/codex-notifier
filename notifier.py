@@ -1,4 +1,4 @@
-"""Filtered Codex completion notifications for Microsoft Teams and local speech.
+"""Filtered Codex completion notifications for webhooks and local speech.
 
 The script has two entry points:
 
@@ -25,22 +25,29 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
 WEBHOOK_ENV = "CODEX_TEAMS_WEBHOOK_URL"
 TEAMS_ENABLED_ENV = "CODEX_NOTIFIER_TEAMS_ENABLED"
 TEAMS_MIN_SECONDS_ENV = "CODEX_NOTIFIER_TEAMS_MIN_SECONDS"
+TEAMS_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_TEAMS_NOTIFY_UNKNOWN_DURATION"
+DISCORD_WEBHOOK_ENV = "CODEX_DISCORD_WEBHOOK_URL"
+DISCORD_ENABLED_ENV = "CODEX_NOTIFIER_DISCORD_ENABLED"
+DISCORD_MIN_SECONDS_ENV = "CODEX_NOTIFIER_DISCORD_MIN_SECONDS"
+DISCORD_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_DISCORD_NOTIFY_UNKNOWN_DURATION"
 VOICE_ENABLED_ENV = "CODEX_NOTIFIER_VOICE_ENABLED"
 VOICE_MIN_SECONDS_ENV = "CODEX_NOTIFIER_VOICE_MIN_SECONDS"
+VOICE_UNKNOWN_DURATION_ENV = "CODEX_NOTIFIER_VOICE_NOTIFY_UNKNOWN_DURATION"
 QUIET_START_ENV = "CODEX_NOTIFIER_QUIET_START"
 QUIET_END_ENV = "CODEX_NOTIFIER_QUIET_END"
 STATE_DIR_ENV = "CODEX_NOTIFIER_STATE_DIR"
 CONFIG_PATH_ENV = "CODEX_NOTIFIER_CONFIG"
 
 DEFAULT_TEAMS_MIN_SECONDS = 300.0
-DEFAULT_VOICE_MIN_SECONDS = 65.0
+DEFAULT_DISCORD_MIN_SECONDS = 300.0
+DEFAULT_VOICE_MIN_SECONDS = 30.0
 DEFAULT_QUIET_START = "23:00"
 DEFAULT_QUIET_END = "07:00"
 STALE_MARKER_SECONDS = 48 * 60 * 60
@@ -49,6 +56,7 @@ DEFAULT_SUMMARY_MAX_CHARS = 1800
 DEFAULT_SUMMARY_TAIL_CHARS = 600
 MIN_SUMMARY_MAX_CHARS = 100
 MAX_SUMMARY_MAX_CHARS = 6000
+MAX_DISCORD_SUMMARY_MAX_CHARS = 4096
 DEFAULT_LOG_RETENTION_DAYS = 7
 MAX_LOG_RETENTION_DAYS = 365
 MAX_LOG_ERROR_CHARS = 300
@@ -309,8 +317,10 @@ def write_trace_log(
     chat_id: str,
     duration_seconds: float | None,
     teams_status: str,
+    discord_status: str,
     voice_status: str,
     teams_error: str = "",
+    discord_error: str = "",
     voice_error: str = "",
 ) -> None:
     if not _config_bool(config, "logging", "enabled", None, True):
@@ -333,10 +343,13 @@ def write_trace_log(
             round(duration_seconds, 3) if duration_seconds is not None else None
         ),
         "teams_status": teams_status,
+        "discord_status": discord_status,
         "voice_status": voice_status,
     }
     if teams_error:
         entry["teams_error"] = teams_error
+    if discord_error:
+        entry["discord_error"] = discord_error
     if voice_error:
         entry["voice_error"] = voice_error
     path = directory / f"notifier-{moment.date().isoformat()}.jsonl"
@@ -450,26 +463,63 @@ def is_quiet_time(moment: datetime, config: dict[str, Any] | None = None) -> boo
 
 
 def notification_channels(
-    duration_seconds: float,
+    duration_seconds: float | None,
     moment: datetime,
     config: dict[str, Any] | None = None,
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, bool]:
     settings = load_config() if config is None else config
-    webhook_configured = bool(
+    teams_webhook_configured = bool(
         _config_text(settings, "teams", "webhook_url", WEBHOOK_ENV)
     )
-    teams = _config_bool(
-        settings, "teams", "enabled", TEAMS_ENABLED_ENV, webhook_configured
-    ) and duration_seconds >= _config_seconds(
-        settings,
-        "teams",
-        "minimum_seconds",
-        TEAMS_MIN_SECONDS_ENV,
-        DEFAULT_TEAMS_MIN_SECONDS,
+    discord_webhook_configured = bool(
+        _config_text(settings, "discord", "webhook_url", DISCORD_WEBHOOK_ENV)
     )
-    voice = (
-        _config_bool(settings, "voice", "enabled", VOICE_ENABLED_ENV, True)
-        and duration_seconds
+    teams_duration_due = (
+        _config_bool(
+            settings,
+            "teams",
+            "notify_when_duration_unknown",
+            TEAMS_UNKNOWN_DURATION_ENV,
+            False,
+        )
+        if duration_seconds is None
+        else duration_seconds
+        >= _config_seconds(
+            settings,
+            "teams",
+            "minimum_seconds",
+            TEAMS_MIN_SECONDS_ENV,
+            DEFAULT_TEAMS_MIN_SECONDS,
+        )
+    )
+    discord_duration_due = (
+        _config_bool(
+            settings,
+            "discord",
+            "notify_when_duration_unknown",
+            DISCORD_UNKNOWN_DURATION_ENV,
+            False,
+        )
+        if duration_seconds is None
+        else duration_seconds
+        >= _config_seconds(
+            settings,
+            "discord",
+            "minimum_seconds",
+            DISCORD_MIN_SECONDS_ENV,
+            DEFAULT_DISCORD_MIN_SECONDS,
+        )
+    )
+    voice_duration_due = (
+        _config_bool(
+            settings,
+            "voice",
+            "notify_when_duration_unknown",
+            VOICE_UNKNOWN_DURATION_ENV,
+            True,
+        )
+        if duration_seconds is None
+        else duration_seconds
         >= _config_seconds(
             settings,
             "voice",
@@ -477,12 +527,28 @@ def notification_channels(
             VOICE_MIN_SECONDS_ENV,
             DEFAULT_VOICE_MIN_SECONDS,
         )
+    )
+    teams = _config_bool(
+        settings, "teams", "enabled", TEAMS_ENABLED_ENV, teams_webhook_configured
+    ) and teams_duration_due
+    discord = _config_bool(
+        settings,
+        "discord",
+        "enabled",
+        DISCORD_ENABLED_ENV,
+        discord_webhook_configured,
+    ) and discord_duration_due
+    voice = (
+        _config_bool(settings, "voice", "enabled", VOICE_ENABLED_ENV, True)
+        and voice_duration_due
         and not is_quiet_time(moment, settings)
     )
-    return teams, voice
+    return teams, discord, voice
 
 
-def _duration_text(duration_seconds: float) -> str:
+def _duration_text(duration_seconds: float | None) -> str:
+    if duration_seconds is None:
+        return "No disponible"
     total_seconds = max(0, round(duration_seconds))
     minutes, seconds = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
@@ -544,7 +610,7 @@ def _chat_title(notification: dict[str, Any]) -> str:
 
 def build_payload(
     notification: dict[str, Any],
-    duration_seconds: float,
+    duration_seconds: float | None,
     marker: dict[str, Any],
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -621,7 +687,69 @@ def build_payload(
     }
 
 
-def send_teams_notification(webhook_url: str, payload: dict[str, Any]) -> None:
+def build_discord_payload(
+    notification: dict[str, Any],
+    duration_seconds: float | None,
+    marker: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    settings = {} if config is None else config
+    chat_id = _text(notification.get("thread-id")) or _text(marker.get("session_id"))
+    chat_title = _chat_title(notification)
+    cwd = _text(notification.get("cwd")) or _text(marker.get("cwd"))
+    summary_max_chars = _config_int(
+        settings,
+        "discord",
+        "summary_max_chars",
+        DEFAULT_SUMMARY_MAX_CHARS,
+        minimum=MIN_SUMMARY_MAX_CHARS,
+        maximum=MAX_DISCORD_SUMMARY_MAX_CHARS,
+    )
+    summary = _truncate(
+        _text(notification.get("last-assistant-message"))
+        or "El turno terminó sin un mensaje final para resumir.",
+        summary_max_chars,
+    )
+    fields = [
+        {"name": "Estado", "value": "Completado", "inline": True},
+        {
+            "name": "Duración",
+            "value": _duration_text(duration_seconds),
+            "inline": True,
+        },
+    ]
+    if cwd:
+        fields.append(
+            {
+                "name": "Proyecto",
+                "value": _truncate(Path(cwd).name or cwd, 100),
+                "inline": True,
+            }
+        )
+    if chat_title:
+        fields.append({"name": "Título", "value": chat_title, "inline": False})
+    if chat_id:
+        fields.append(
+            {"name": "ID del chat", "value": _truncate(chat_id, 200), "inline": False}
+        )
+    return {
+        "username": "Codex Notifier",
+        "allowed_mentions": {"parse": []},
+        "embeds": [
+            {
+                "title": "✅ Turno de Codex completado",
+                "description": summary,
+                "color": 3061878,
+                "fields": fields,
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+        ],
+    }
+
+
+def _send_webhook_notification(
+    service: str, webhook_url: str, payload: dict[str, Any]
+) -> None:
     request = Request(
         webhook_url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -636,28 +764,63 @@ def send_teams_notification(webhook_url: str, payload: dict[str, Any]) -> None:
             with urlopen(request, timeout=5) as response:
                 if 200 <= response.status < 300:
                     return
-                raise RuntimeError(f"Teams respondió con HTTP {response.status}")
+                raise RuntimeError(f"{service} respondió con HTTP {response.status}")
         except HTTPError as exc:
             if exc.code not in {429, 500, 502, 503, 504} or attempt == 1:
-                raise RuntimeError(f"Teams respondió con HTTP {exc.code}") from exc
+                raise RuntimeError(f"{service} respondió con HTTP {exc.code}") from exc
         except URLError as exc:
             if attempt == 1:
-                raise RuntimeError(f"No se pudo conectar con Teams: {exc.reason}") from exc
+                raise RuntimeError(
+                    f"No se pudo conectar con {service}: {exc.reason}"
+                ) from exc
         time.sleep(1)
+
+
+def send_teams_notification(webhook_url: str, payload: dict[str, Any]) -> None:
+    _send_webhook_notification("Teams", webhook_url, payload)
+
+
+def send_discord_notification(webhook_url: str, payload: dict[str, Any]) -> None:
+    parts = urlsplit(webhook_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["wait"] = "true"
+    confirmed_url = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+    _send_webhook_notification("Discord", confirmed_url, payload)
 
 
 def _voice_message(
     notification: dict[str, Any],
-    duration_seconds: float,
+    duration_seconds: float | None,
     marker: dict[str, Any],
     language: str,
 ) -> str:
     cwd = _text(notification.get("cwd")) or _text(marker.get("cwd"))
     project = _truncate(Path(cwd).name, 60) if cwd else "actual"
-    duration = _spoken_duration(duration_seconds, language)
+    title = _chat_title(notification)
+    extra = ""
+    if title:
+        extra = f" Task: {title}." if language == "en" else f" Tarea: {title}."
     if language == "en":
-        return f"Codex finished the task for project {project} after {duration}."
-    return f"Codex terminó la tarea del proyecto {project} después de {duration}."
+        if duration_seconds is None:
+            base = (
+                f"Codex finished the task for project {project}. "
+                "The duration could not be determined."
+            )
+        else:
+            duration = _spoken_duration(duration_seconds, language)
+            base = f"Codex finished the task for project {project} after {duration}."
+        return base + extra
+    if duration_seconds is None:
+        base = (
+            f"Codex terminó la tarea del proyecto {project}. "
+            "No se pudo determinar la duración."
+        )
+    else:
+        duration = _spoken_duration(duration_seconds, language)
+        base = f"Codex terminó la tarea del proyecto {project} después de {duration}."
+    return base + extra
 
 
 def speak_windows(
@@ -759,26 +922,14 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
         _text(notification.get("thread-id") or notification.get("thread_id"))
         or _text(marker.get("session_id"))
     )
-    if duration is None:
-        try:
-            write_trace_log(
-                config,
-                moment=moment,
-                chat_id=chat_id,
-                duration_seconds=None,
-                teams_status="not_evaluated",
-                voice_status="not_evaluated",
-                teams_error="No se encontró el marcador de inicio del turno.",
-                voice_error="No se encontró el marcador de inicio del turno.",
-            )
-        except OSError as exc:
-            print(f"No se pudo escribir el log del notificador: {exc}", file=sys.stderr)
-        return
-
-    teams_due, voice_due = notification_channels(duration, moment, config)
+    teams_due, discord_due, voice_due = notification_channels(
+        duration, moment, config
+    )
     teams_status = "not_due"
+    discord_status = "not_due"
     voice_status = "not_due"
     teams_error = ""
+    discord_error = ""
     voice_error = ""
 
     # Voice runs first and synchronously so a slow or failed webhook cannot
@@ -830,6 +981,33 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
             )
             print(teams_error, file=sys.stderr)
 
+    if discord_due:
+        webhook_url = _config_text(
+            config, "discord", "webhook_url", DISCORD_WEBHOOK_ENV
+        )
+        if webhook_url and urlsplit(webhook_url).scheme == "https":
+            try:
+                send_discord_notification(
+                    webhook_url,
+                    build_discord_payload(notification, duration, marker, config),
+                )
+                discord_status = "sent"
+            except Exception as exc:
+                discord_status = "failed"
+                discord_error = _safe_error(exc, webhook_url)
+                print(
+                    f"No se pudo enviar la notificación a Discord: {exc}",
+                    file=sys.stderr,
+                )
+        else:
+            discord_status = "failed"
+            discord_error = (
+                "El webhook de Discord debe usar HTTPS."
+                if webhook_url
+                else "No hay un webhook de Discord configurado."
+            )
+            print(discord_error, file=sys.stderr)
+
     try:
         write_trace_log(
             config,
@@ -837,8 +1015,10 @@ def handle_completion(notification: dict[str, Any], *, now: float | None = None)
             chat_id=chat_id,
             duration_seconds=duration,
             teams_status=teams_status,
+            discord_status=discord_status,
             voice_status=voice_status,
             teams_error=teams_error,
+            discord_error=discord_error,
             voice_error=voice_error,
         )
     except OSError as exc:
