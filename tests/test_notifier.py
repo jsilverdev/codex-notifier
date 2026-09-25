@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import re
 import sys
 import tempfile
 import unittest
@@ -329,7 +328,7 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("No se pudo determinar la duración", message)
         self.assertNotIn("Cambio listo", message)
 
-    @patch("notifier.os.name", "nt")
+    @patch("notifier._voice.PLATFORM_NAME", "nt")
     @patch("notifier.subprocess.run")
     def test_speech_waits_and_passes_language_and_preferred_voice(self, run) -> None:
         notifier.speak_windows(
@@ -350,6 +349,32 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.kwargs["timeout"], notifier.SPEECH_TIMEOUT_SECONDS
         )
+
+    @patch("notifier.tempfile.TemporaryDirectory")
+    @patch("notifier.subprocess.run")
+    @patch("notifier.shutil.which")
+    @patch("notifier._voice.PLATFORM_NAME", "nt")
+    def test_windows_piper_uses_powershell_soundplayer(
+        self, which, run, temporary_directory
+    ) -> None:
+        model = Path(self.temp_dir.name) / "es_ES-test-medium.onnx"
+        model.touch()
+        temporary_directory.return_value.__enter__.return_value = self.temp_dir.name
+        which.side_effect = lambda name: "/opt/piper/bin/piper" if name == "piper" else None
+
+        notifier.speak(
+            "Tarea terminada",
+            language="es",
+            voice_config={
+                "piper_executable": "piper",
+                "spanish_voice": str(model),
+            },
+        )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0][0], "powershell.exe")
+        self.assertIn("System.Media.SoundPlayer", run.call_args_list[1].args[0][-1])
+        self.assertIn("$player.Load();$player.PlaySync()", run.call_args_list[1].args[0][-1])
 
     @patch("notifier.speak")
     @patch("notifier.send_teams_notification")
@@ -652,6 +677,15 @@ class NotifierTests(unittest.TestCase):
             ["/usr/bin/espeak-ng", "-v", "en", "Task complete"],
         )
 
+    @patch("notifier._voice.speak_piper")
+    @patch("notifier._voice.PLATFORM_NAME", "posix")
+    def test_speak_selects_piper_before_linux_fallback(self, piper) -> None:
+        config = {"piper_executable": "piper"}
+
+        notifier.speak("Task complete", language="en", voice_config=config)
+
+        piper.assert_called_once_with("Task complete", language="en", voice_config=config)
+
     @patch("notifier.tempfile.TemporaryDirectory")
     @patch("notifier.subprocess.run")
     @patch("notifier.shutil.which")
@@ -667,14 +701,16 @@ class NotifierTests(unittest.TestCase):
             "pw-play": "/usr/bin/pw-play",
         }.get(name)
 
-        notifier.speak_linux(
-            "Tarea terminada",
-            language="es",
-            voice_config={
-                "piper_executable": "piper",
-                "spanish_voice": str(model),
-            },
-        )
+        with patch("notifier._voice.play_wav") as play_wav:
+            notifier.speak_piper(
+                "Tarea terminada",
+                language="es",
+                voice_config={
+                    "piper_executable": "piper",
+                    "spanish_voice": str(model),
+                },
+            )
+            play_wav.assert_called_once_with(wav)
 
         self.assertEqual(
             run.call_args_list[0].args[0],
@@ -688,6 +724,8 @@ class NotifierTests(unittest.TestCase):
                 "Tarea terminada",
             ],
         )
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
+            notifier._voice.play_wav(wav)
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["/usr/bin/pw-play", str(wav)],
@@ -695,7 +733,7 @@ class NotifierTests(unittest.TestCase):
 
     def test_linux_piper_requires_the_voice_for_the_requested_language(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "english_voice"):
-            notifier.speak_linux(
+            notifier.speak(
                 "Task complete",
                 language="en",
                 voice_config={"piper_executable": "piper"},
@@ -715,15 +753,16 @@ class NotifierTests(unittest.TestCase):
             "pw-play": "/usr/bin/pw-play",
         }.get(name)
 
-        notifier.speak_linux(
-            "Tarea terminada",
-            language="es",
-            voice_config={
-                "piper_executable": "piper",
-                "spanish_voice": str(model),
-                "volume": 0.65,
-            },
-        )
+        with patch("notifier._voice.play_wav"):
+            notifier.speak_piper(
+                "Tarea terminada",
+                language="es",
+                voice_config={
+                    "piper_executable": "piper",
+                    "spanish_voice": str(model),
+                    "volume": 0.65,
+                },
+            )
 
         self.assertIn("--volume", run.call_args_list[0].args[0])
         self.assertIn("0.65", run.call_args_list[0].args[0])
@@ -745,18 +784,23 @@ class NotifierTests(unittest.TestCase):
         }.get(name)
         run.side_effect = [
             SimpleNamespace(),
-            SimpleNamespace(stdout=r"C:\\wsl.localhost\Debian\tmp\speech.wav" + "\n"),
+            SimpleNamespace(stdout=r"C:\\wsl.localhost\Debian\tmp\speech 'demo'.wav" + "\n"),
             SimpleNamespace(),
         ]
 
-        notifier.speak_linux(
-            "Task complete",
-            language="en",
-            voice_config={
-                "piper_executable": "piper",
-                "english_voice": str(model),
-            },
-        )
+        with patch("notifier._voice.play_wav") as play_wav:
+            notifier.speak_piper(
+                "Task complete",
+                language="en",
+                voice_config={
+                    "piper_executable": "piper",
+                    "english_voice": str(model),
+                },
+            )
+            play_wav.assert_called_once_with(wav)
+
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
+            notifier._voice.play_wav(wav)
 
         self.assertEqual(
             run.call_args_list[1].args[0],
@@ -768,12 +812,20 @@ class NotifierTests(unittest.TestCase):
             "/mnt/c/Windows/System32/powershell.exe",
         )
         powershell_script = powershell_call.args[0][-1]
+        self.assertIn("FromBase64String($env:CODEX_NOTIFIER_WAV_B64)", powershell_script)
         self.assertEqual(
             base64.b64decode(
-                re.search(r"FromBase64String\('([^']+)'\)", powershell_script).group(1)
+                powershell_call.kwargs["env"]["CODEX_NOTIFIER_WAV_B64"]
             ).decode("utf-8"),
-            r"C:\\wsl.localhost\Debian\tmp\speech.wav",
+            r"C:\\wsl.localhost\Debian\tmp\speech 'demo'.wav",
         )
+
+    @patch("notifier.shutil.which", return_value=None)
+    def test_linux_piper_reports_missing_wav_player(self, which) -> None:
+        wav_path = Path(self.temp_dir.name) / "speech.wav"
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
+            with self.assertRaisesRegex(RuntimeError, "reproductor compatible"):
+                notifier._voice.play_wav(wav_path)
 
 
 if __name__ == "__main__":

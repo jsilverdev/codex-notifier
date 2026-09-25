@@ -14,6 +14,7 @@ from typing import Any
 from ..state import text
 
 SPEECH_TIMEOUT_SECONDS = 30
+PLATFORM_NAME = os.name
 SPANISH_WORDS = {"al", "cambios", "completado", "con", "corregido", "de", "el", "en", "esta", "este", "fue", "la", "las", "listo", "los", "para", "por", "pruebas", "que", "se", "sin", "una", "y", "ya"}
 ENGLISH_WORDS = {"a", "and", "changes", "completed", "done", "for", "from", "has", "fixed", "in", "is", "of", "on", "that", "the", "tests", "this", "to", "was", "ready", "with", "without"}
 
@@ -58,13 +59,13 @@ def _creation_flags() -> int:
 
 def speak_sapi_windows(message: str, *, language: str, preferred_voice: str = "",
                        volume: float | None = None) -> None:
-    if os.name != "nt":
+    if PLATFORM_NAME != "nt":
         raise RuntimeError("La voz local solo está disponible en Windows.")
     environment = os.environ.copy()
     environment["CODEX_NOTIFIER_SPEECH_B64"] = base64.b64encode(message.encode("utf-8")).decode("ascii")
     environment["CODEX_NOTIFIER_SPEECH_LANGUAGE"] = language
     environment["CODEX_NOTIFIER_SPEECH_VOICE"] = preferred_voice
-    environment["CODEX_NOTIFIER_SPEECH_VOLUME"] = "" if volume is None else str(round(min(1.0, max(0.0, volume)) * 100))
+    environment["CODEX_NOTIFIER_SPEECH_VOLUME"] = "" if volume is None else str(round(volume * 100))
     script = (
         "$bytes=[Convert]::FromBase64String($env:CODEX_NOTIFIER_SPEECH_B64);"
         "$text=[Text.Encoding]::UTF8.GetString($bytes);$voice=New-Object -ComObject SAPI.SpVoice;"
@@ -84,9 +85,8 @@ def speak_sapi_windows(message: str, *, language: str, preferred_voice: str = ""
                    timeout=SPEECH_TIMEOUT_SECONDS)
 
 
-def play_wav_windows(wav_path: Path, *, powershell: str | None = None) -> None:
-    executable = powershell or shutil.which("powershell.exe") or "powershell.exe"
-    encoded_path = base64.b64encode(str(wav_path).encode("utf-8")).decode("ascii")
+def _play_wav_powershell(windows_path: str, powershell: str) -> None:
+    encoded_path = base64.b64encode(windows_path.encode("utf-8")).decode("ascii")
     script = (
         "$ErrorActionPreference='Stop';$bytes=[Convert]::FromBase64String($env:CODEX_NOTIFIER_WAV_B64);"
         "$path=[Text.Encoding]::UTF8.GetString($bytes);$player=New-Object System.Media.SoundPlayer $path;"
@@ -94,23 +94,20 @@ def play_wav_windows(wav_path: Path, *, powershell: str | None = None) -> None:
     )
     environment = os.environ.copy()
     environment["CODEX_NOTIFIER_WAV_B64"] = encoded_path
-    subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    subprocess.run([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
                    env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, creationflags=_creation_flags(), check=True,
                    timeout=SPEECH_TIMEOUT_SECONDS)
 
 
+def play_wav_windows(wav_path: Path, *, powershell: str | None = None) -> None:
+    _play_wav_powershell(str(wav_path), powershell or "powershell.exe")
+
+
 def _play_wav_wsl(wav_path: Path, powershell: str, wslpath: str) -> None:
     result = subprocess.run([wslpath, "-w", str(wav_path)], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, check=True, timeout=5)
-    windows_path = result.stdout.strip()
-    encoded_path = base64.b64encode(windows_path.encode("utf-8")).decode("ascii")
-    script = ("$ErrorActionPreference='Stop';$bytes=[Convert]::FromBase64String('" + encoded_path + "');"
-              "$path=[Text.Encoding]::UTF8.GetString($bytes);$player=New-Object System.Media.SoundPlayer $path;"
-              "$player.Load();$player.PlaySync()")
-    subprocess.run([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   creationflags=_creation_flags(), check=True, timeout=SPEECH_TIMEOUT_SECONDS)
+    _play_wav_powershell(result.stdout.strip(), powershell)
 
 
 def generate_piper_wav(message: str, *, language: str = "es", voice_config: dict[str, Any],
@@ -142,25 +139,23 @@ def generate_piper_wav(message: str, *, language: str = "es", voice_config: dict
     return wav_path
 
 
-def speak_piper(message: str, *, language: str = "es", voice_config: dict[str, Any],
-                windows: bool | None = None) -> None:
+def speak_piper(message: str, *, language: str = "es", voice_config: dict[str, Any]) -> None:
     with tempfile.TemporaryDirectory(prefix="codex-notifier-") as temporary_dir:
         wav_path = generate_piper_wav(message, language=language, voice_config=voice_config,
                                        temporary_dir=temporary_dir)
-        use_windows = os.name == "nt" if windows is None else windows
-        if use_windows:
-            play_wav_windows(wav_path)
-            return
-        play_wav_linux(wav_path)
+        play_wav(wav_path)
 
 
-def play_wav_linux(wav_path: Path) -> None:
-    powershell = shutil.which("powershell.exe")
-    wslpath = shutil.which("wslpath")
-    if powershell and wslpath:
-        _play_wav_wsl(wav_path, powershell, wslpath)
-        return
-    player = next(((name, shutil.which(name)) for name in ("paplay", "pw-play", "aplay", "ffplay") if shutil.which(name)), None)
+def find_executable(*names: str) -> tuple[str, str] | None:
+    for name in names:
+        executable = shutil.which(name)
+        if executable:
+            return name, executable
+    return None
+
+
+def _play_wav_linux(wav_path: Path) -> None:
+    player = find_executable("paplay", "pw-play", "aplay", "ffplay")
     if not player:
         raise RuntimeError("No se encontró un reproductor compatible: instala paplay, pw-play, aplay o ffplay. En WSL también se admite powershell.exe.")
     name, executable = player
@@ -170,19 +165,41 @@ def play_wav_linux(wav_path: Path) -> None:
                    creationflags=_creation_flags())
 
 
-def speak_linux(message: str, *, language: str = "es", voice_config: dict[str, Any] | None = None) -> None:
-    settings = {} if voice_config is None else voice_config
-    if text(settings.get("piper_executable")):
-        speak_piper(message, language=language, voice_config=settings, windows=False)
+def _play_wav_posix(wav_path: Path) -> None:
+    powershell = shutil.which("powershell.exe")
+    wslpath = shutil.which("wslpath")
+    if powershell and wslpath:
+        _play_wav_wsl(wav_path, powershell, wslpath)
         return
-    dispatcher = shutil.which("spd-say")
+
+    _play_wav_linux(wav_path)
+
+
+def play_wav(wav_path: Path) -> None:
+    if PLATFORM_NAME == "nt":
+        _play_wav_powershell(str(wav_path), "powershell.exe")
+        return
+    if PLATFORM_NAME == "posix":
+        _play_wav_posix(wav_path)
+        return
+    raise RuntimeError(f"La reproducción de audio no es compatible con la plataforma {PLATFORM_NAME}.")
+
+
+def play_wav_linux(wav_path: Path) -> None:
+    _play_wav_posix(wav_path)
+
+
+def speak_linux(message: str, *, language: str = "es", voice_config: dict[str, Any] | None = None) -> None:
+    dispatcher = find_executable("spd-say")
     if dispatcher:
-        command = [dispatcher, "-w", "-l", language, message]
+        _, executable = dispatcher
+        command = [executable, "-w", "-l", language, message]
     else:
-        espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        espeak = find_executable("espeak-ng", "espeak")
         if not espeak:
             raise RuntimeError("Instala speech-dispatcher (spd-say) o espeak-ng para usar voz en Linux.")
-        command = [espeak, "-v", language, message]
+        _, executable = espeak
+        command = [executable, "-v", language, message]
     subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, check=True, timeout=SPEECH_TIMEOUT_SECONDS,
                    creationflags=_creation_flags())
@@ -191,17 +208,17 @@ def speak_linux(message: str, *, language: str = "es", voice_config: dict[str, A
 def speak(message: str, *, language: str = "es", preferred_voice: str = "",
           voice_config: dict[str, Any] | None = None) -> None:
     settings = {} if voice_config is None else voice_config
-    if os.name == "nt":
-        if text(settings.get("piper_executable")):
-            speak_piper(message, language=language, voice_config=settings, windows=True)
-        else:
-            speak_sapi_windows(message, language=language, preferred_voice=preferred_voice,
-                               volume=configured_volume(settings))
+    if text(settings.get("piper_executable")):
+        speak_piper(message, language=language, voice_config=settings)
         return
-    if os.name == "posix":
-        speak_linux(message, language=language, voice_config=settings)
+    if PLATFORM_NAME == "nt":
+        speak_sapi_windows(message, language=language, preferred_voice=preferred_voice,
+                           volume=configured_volume(settings))
         return
-    raise RuntimeError(f"La voz local no es compatible con la plataforma {os.name}.")
+    if PLATFORM_NAME == "posix":
+        speak_linux(message, language=language)
+        return
+    raise RuntimeError(f"La voz local no es compatible con la plataforma {PLATFORM_NAME}.")
 
 
 speak_windows = speak_sapi_windows
