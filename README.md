@@ -230,7 +230,7 @@ failures are logged independently. Invalid manual syntax returns non-zero, and
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs this suite on Ubuntu and Windows with Python 3.13 and
+GitHub Actions runs this suite on Ubuntu and Windows with Python 3.10 and
 Python 3.14.
 
 ## How it works

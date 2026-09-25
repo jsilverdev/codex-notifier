@@ -13,11 +13,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python: "3.13"
+            python: "3.10"
           - os: ubuntu-latest
             python: "3.14"
           - os: windows-latest
-            python: "3.13"
+            python: "3.10"
           - os: windows-latest
             python: "3.14"
     runs-on: ${{ matrix.os }}
