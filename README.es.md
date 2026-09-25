@@ -23,7 +23,8 @@ configuración local.
 
 Las alertas de voz se silencian entre las 23:00 y las 07:00. Mencionan el
 proyecto, la duración y el título del chat cuando Codex lo proporciona. Teams y
-Discord incluyen el mensaje final del asistente como un resumen limitado.
+Discord incluyen por defecto el mensaje final como resumen limitado; configura
+`include_summary` como `false` para omitir por completo el texto de la respuesta.
 
 Cada canal se ejecuta de forma independiente: el fallo de un webhook no impide
 que funcionen la voz o el otro webhook. El notificador mantiene un registro
@@ -34,7 +35,7 @@ final del asistente.
 
 - Python 3.10 o posterior.
 - Codex con acceso a `~/.codex/config.toml`.
-- Voz en Windows: SAPI, normalmente incluido con Windows.
+- Voz en Windows: SAPI, normalmente incluido con Windows; Piper es opcional.
 - Voz en Linux: Piper (recomendado), `spd-say`, `espeak-ng` o `espeak`.
 
 Teams y Discord no necesitan un motor de voz local.
@@ -55,10 +56,16 @@ El instalador:
 3. Copia `config.example.json` a la ruta de configuración local si todavía no
    existe.
 
-Los archivos existentes de Codex se respaldan antes de modificarlos. Una
-configuración existente del notificador se conserva salvo que se use
+Los archivos existentes de Codex se respaldan antes de modificarlos. Las
+escrituras usan archivos temporales y reemplazo atómico, por lo que un fallo no
+destruye el destino. Una configuración existente del notificador se conserva salvo que se use
 explícitamente `--force-config`. Después de instalar o cambiar el hook, abre un
 chat nuevo y usa `/hooks` para revisarlo y confiar en él.
+
+El instalador modifica únicamente `notify` en la raíz de `config.toml`; no
+reemplaza claves `notify` dentro de secciones TOML ni hooks ajenos. En POSIX,
+las carpetas de estado son privadas y las marcas, logs y configuraciones nuevas
+usan permisos solo para el propietario cuando corresponde.
 
 Opciones del instalador:
 
@@ -89,6 +96,7 @@ canales:
     "enabled": false,
     "minimum_seconds": 300,
     "notify_when_duration_unknown": false,
+    "include_summary": true,
     "summary_max_chars": 1800,
     "summary_tail_chars": 600,
     "webhook_url": ""
@@ -97,6 +105,7 @@ canales:
     "enabled": false,
     "minimum_seconds": 300,
     "notify_when_duration_unknown": false,
+    "include_summary": true,
     "summary_max_chars": 1800,
     "webhook_url": ""
   },
@@ -122,6 +131,9 @@ canales:
 `minimum_seconds` es inclusivo. `notify_when_duration_unknown` omite únicamente
 el umbral de duración: el canal debe seguir habilitado, los canales de webhook
 necesitan una URL HTTPS válida y la voz sigue respetando el horario silencioso.
+`include_summary` es `true` por compatibilidad. Con `false`, Teams omite su
+sección de resumen y Discord omite la descripción del embed, pero conserva los
+metadatos. Ambos canales siguen aceptando cualquier URL HTTPS.
 
 El instalador no combina claves nuevas dentro de una configuración existente.
 Al actualizar, compara tu archivo local con `config.example.json` y añade
@@ -162,9 +174,12 @@ PowerShell para usar directamente el dispositivo de audio de Windows.
 completo). `null` conserva el volumen predeterminado. La opción se aplica a
 Piper en Linux/WSL y a SAPI en Windows.
 
-En Windows, `spanish_voice` y `english_voice` pueden contener parte del nombre
-de una voz SAPI instalada. Los valores vacíos seleccionan automáticamente una
-voz del idioma correspondiente.
+En Windows, si `piper_executable` está vacío se conserva SAPI: `spanish_voice` y
+`english_voice` son fragmentos opcionales del nombre de una voz instalada. Si
+no está vacío, se resuelve por PATH o como ruta expandida a `piper.exe`, y esos
+campos son rutas a modelos `.onnx` de español/inglés. Un Piper configurado pero
+inválido produce un error visible y no cambia silenciosamente a SAPI; SAPI
+continúa siendo el valor predeterminado sin configuración.
 
 Configura `quiet_start` y `quiet_end` con la misma hora para deshabilitar el
 horario silencioso.
@@ -206,17 +221,24 @@ python notifier.py voice-test es
 python notifier.py voice-test en
 ```
 
-Cada comando selecciona el modelo Piper correspondiente al idioma. En Linux
-nativo reproduce el WAV temporal con `paplay`, `pw-play`, `aplay` o `ffplay`.
+Cada comando selecciona el modelo Piper correspondiente cuando Piper está
+configurado. En Windows sin Piper prueba SAPI; en Linux reproduce el WAV
+temporal con `paplay`, `pw-play`, `aplay` o `ffplay`.
 
 Estos comandos reproducen audio; las pruebas automatizadas simulan las llamadas
 de voz y webhook.
+
+`notify` devuelve éxito a Codex aunque falle un canal; los fallos se registran
+de forma independiente. La sintaxis manual inválida devuelve un código
+distinto de cero, al igual que `voice-test` si la voz no puede ejecutarse.
 
 ## Ejecutar las pruebas
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+GitHub Actions ejecuta esta suite en Ubuntu y Windows con Python 3.10 y 3.13.
 
 ## Cómo funciona
 

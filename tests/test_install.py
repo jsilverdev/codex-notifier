@@ -178,6 +178,28 @@ class InstallTests(unittest.TestCase):
         self.assertIsNone(backup)
         self.assertEqual(destination.read_text(encoding="utf-8"), '{"keep":true}\n')
 
+    def test_root_notify_scanner_does_not_touch_section_values(self) -> None:
+        notify = 'notify = ["python", "notifier.py", "notify"]'
+        cases = {
+            "": notify + "\n",
+            'notify = ["old"]\nmodel = "x"\n': notify + "\nmodel = \"x\"\n",
+            'model = "x"\n[section]\nnotify = ["section"]\n': 'model = "x"\n' + notify + '\n[section]\nnotify = ["section"]\n',
+            '# notify = ["comment"]\n[section]\nkey = true\n': '# notify = ["comment"]\n' + notify + '\n[section]\nkey = true\n',
+            'notify = ["root"]\n[section]\nnotify = ["section"]\n': notify + '\n[section]\nnotify = ["section"]\n',
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(install.update_root_notify(original, notify), expected)
+                self.assertEqual(install.update_root_notify(expected, notify), expected)
+
+    def test_root_notify_preserves_inline_comment(self) -> None:
+        notify = 'notify = ["python", "notifier.py", "notify"]'
+        original = 'notify = ["old"] # keep this comment\n[section]\nvalue = 1\n'
+        self.assertEqual(
+            install.update_root_notify(original, notify),
+            notify + ' # keep this comment\n[section]\nvalue = 1\n',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
