@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -15,7 +14,7 @@ from .config import (DEFAULT_DISCORD_MIN_SECONDS, DEFAULT_QUIET_END,
                      DEFAULT_QUIET_START, DEFAULT_TEAMS_MIN_SECONDS,
                      DEFAULT_VOICE_MIN_SECONDS, config_bool, config_section,
                      config_seconds, config_text, load_config)
-from .payloads import build_discord_payload, build_payload
+from .payloads import build_discord_payload, build_payload, project_name
 from .state import consume_start, record_start, text
 from .trace_logging import safe_error, write_trace_log
 
@@ -79,7 +78,7 @@ def spoken_duration(duration_seconds: float, language: str) -> str:
 def voice_message(notification: dict[str, Any], duration_seconds: float | None,
                   marker: dict[str, Any], language: str) -> str:
     cwd = text(notification.get("cwd")) or text(marker.get("cwd"))
-    project = (Path(cwd).name[:60] if cwd else "actual")
+    project = (project_name(cwd)[:60] if cwd else "actual")
     title = text(notification.get("thread-title") or notification.get("thread_title") or notification.get("title"))
     extra = (f" Task: {title}." if language == "en" else f" Tarea: {title}.") if title else ""
     if language == "en":

@@ -238,7 +238,7 @@ distinto de cero, al igual que `voice-test` si la voz no puede ejecutarse.
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions ejecuta esta suite en Ubuntu y Windows con Python 3.10 y 3.13.
+GitHub Actions ejecuta esta suite en Ubuntu y Windows con Python 3.13 y 3.14.
 
 ## Cómo funciona
 

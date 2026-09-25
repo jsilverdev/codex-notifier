@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .config import (DEFAULT_SUMMARY_MAX_CHARS, DEFAULT_SUMMARY_TAIL_CHARS,
@@ -12,6 +12,12 @@ from .config import (DEFAULT_SUMMARY_MAX_CHARS, DEFAULT_SUMMARY_TAIL_CHARS,
 from .state import text
 
 MAX_TITLE_CHARS = 120
+
+
+def project_name(cwd: str) -> str:
+    """Return the final component of a Windows or POSIX working directory."""
+    path_type = PureWindowsPath if "\\" in cwd else PurePosixPath
+    return path_type(cwd).name or cwd
 
 
 def truncate(value: str, limit: int) -> str:
@@ -80,7 +86,7 @@ def build_payload(notification: dict[str, Any], duration_seconds: float | None,
     if title:
         facts.append({"title": "Título", "value": title})
     if cwd:
-        facts.append({"title": "Proyecto", "value": Path(cwd).name or cwd})
+        facts.append({"title": "Proyecto", "value": project_name(cwd)})
     facts.append({"title": "Fecha y hora", "value": completed_at})
     body: list[dict[str, Any]] = [
         {"type": "TextBlock", "text": "✅ Turno de Codex completado", "size": "Large",
@@ -116,7 +122,7 @@ def build_discord_payload(notification: dict[str, Any], duration_seconds: float 
     fields = [{"name": "Estado", "value": "Completado", "inline": True},
               {"name": "Duración", "value": duration_text(duration_seconds), "inline": True}]
     if cwd:
-        fields.append({"name": "Proyecto", "value": truncate(Path(cwd).name or cwd, 100), "inline": True})
+        fields.append({"name": "Proyecto", "value": truncate(project_name(cwd), 100), "inline": True})
     if title:
         fields.append({"name": "Título", "value": title, "inline": False})
     if chat_id:
