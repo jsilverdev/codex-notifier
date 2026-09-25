@@ -14,6 +14,7 @@ from typing import Any
 from ..state import text
 
 SPEECH_TIMEOUT_SECONDS = 30
+PLATFORM_NAME = os.name
 SPANISH_WORDS = {"al", "cambios", "completado", "con", "corregido", "de", "el", "en", "esta", "este", "fue", "la", "las", "listo", "los", "para", "por", "pruebas", "que", "se", "sin", "una", "y", "ya"}
 ENGLISH_WORDS = {"a", "and", "changes", "completed", "done", "for", "from", "has", "fixed", "in", "is", "of", "on", "that", "the", "tests", "this", "to", "was", "ready", "with", "without"}
 
@@ -58,7 +59,7 @@ def _creation_flags() -> int:
 
 def speak_sapi_windows(message: str, *, language: str, preferred_voice: str = "",
                        volume: float | None = None) -> None:
-    if os.name != "nt":
+    if PLATFORM_NAME != "nt":
         raise RuntimeError("La voz local solo está disponible en Windows.")
     environment = os.environ.copy()
     environment["CODEX_NOTIFIER_SPEECH_B64"] = base64.b64encode(message.encode("utf-8")).decode("ascii")
@@ -175,13 +176,13 @@ def _play_wav_posix(wav_path: Path) -> None:
 
 
 def play_wav(wav_path: Path) -> None:
-    if os.name == "nt":
+    if PLATFORM_NAME == "nt":
         _play_wav_powershell(str(wav_path), "powershell.exe")
         return
-    if os.name == "posix":
+    if PLATFORM_NAME == "posix":
         _play_wav_posix(wav_path)
         return
-    raise RuntimeError(f"La reproducción de audio no es compatible con la plataforma {os.name}.")
+    raise RuntimeError(f"La reproducción de audio no es compatible con la plataforma {PLATFORM_NAME}.")
 
 
 def play_wav_linux(wav_path: Path) -> None:
@@ -210,14 +211,14 @@ def speak(message: str, *, language: str = "es", preferred_voice: str = "",
     if text(settings.get("piper_executable")):
         speak_piper(message, language=language, voice_config=settings)
         return
-    if os.name == "nt":
+    if PLATFORM_NAME == "nt":
         speak_sapi_windows(message, language=language, preferred_voice=preferred_voice,
                            volume=configured_volume(settings))
         return
-    if os.name == "posix":
+    if PLATFORM_NAME == "posix":
         speak_linux(message, language=language)
         return
-    raise RuntimeError(f"La voz local no es compatible con la plataforma {os.name}.")
+    raise RuntimeError(f"La voz local no es compatible con la plataforma {PLATFORM_NAME}.")
 
 
 speak_windows = speak_sapi_windows

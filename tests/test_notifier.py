@@ -328,7 +328,7 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("No se pudo determinar la duración", message)
         self.assertNotIn("Cambio listo", message)
 
-    @patch("notifier.os.name", "nt")
+    @patch("notifier._voice.PLATFORM_NAME", "nt")
     @patch("notifier.subprocess.run")
     def test_speech_waits_and_passes_language_and_preferred_voice(self, run) -> None:
         notifier.speak_windows(
@@ -353,7 +353,7 @@ class NotifierTests(unittest.TestCase):
     @patch("notifier.tempfile.TemporaryDirectory")
     @patch("notifier.subprocess.run")
     @patch("notifier.shutil.which")
-    @patch("notifier.os.name", "nt")
+    @patch("notifier._voice.PLATFORM_NAME", "nt")
     def test_windows_piper_uses_powershell_soundplayer(
         self, which, run, temporary_directory
     ) -> None:
@@ -678,7 +678,7 @@ class NotifierTests(unittest.TestCase):
         )
 
     @patch("notifier._voice.speak_piper")
-    @patch("notifier.os.name", "posix")
+    @patch("notifier._voice.PLATFORM_NAME", "posix")
     def test_speak_selects_piper_before_linux_fallback(self, piper) -> None:
         config = {"piper_executable": "piper"}
 
@@ -724,7 +724,7 @@ class NotifierTests(unittest.TestCase):
                 "Tarea terminada",
             ],
         )
-        with patch("notifier.os.name", "posix"):
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
             notifier._voice.play_wav(wav)
         self.assertEqual(
             run.call_args_list[1].args[0],
@@ -799,7 +799,7 @@ class NotifierTests(unittest.TestCase):
             )
             play_wav.assert_called_once_with(wav)
 
-        with patch("notifier.os.name", "posix"):
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
             notifier._voice.play_wav(wav)
 
         self.assertEqual(
@@ -823,7 +823,7 @@ class NotifierTests(unittest.TestCase):
     @patch("notifier.shutil.which", return_value=None)
     def test_linux_piper_reports_missing_wav_player(self, which) -> None:
         wav_path = Path(self.temp_dir.name) / "speech.wav"
-        with patch("notifier.os.name", "posix"):
+        with patch("notifier._voice.PLATFORM_NAME", "posix"):
             with self.assertRaisesRegex(RuntimeError, "reproductor compatible"):
                 notifier._voice.play_wav(wav_path)
 

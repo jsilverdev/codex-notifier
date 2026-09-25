@@ -85,7 +85,7 @@ class HardeningTests(unittest.TestCase):
 
     @patch("codex_notifier.channels.voice.speak_sapi_windows")
     @patch("codex_notifier.channels.voice.speak_piper")
-    @patch("codex_notifier.channels.voice.os.name", "nt")
+    @patch("codex_notifier.channels.voice.PLATFORM_NAME", "nt")
     def test_windows_voice_defaults_to_sapi_and_uses_piper_when_configured(self, piper, sapi) -> None:
         voice.speak("hello", language="en", voice_config={})
         sapi.assert_called_once()
@@ -97,7 +97,7 @@ class HardeningTests(unittest.TestCase):
 
     @patch("codex_notifier.channels.voice.speak_sapi_windows")
     @patch("codex_notifier.channels.voice.speak_piper", side_effect=RuntimeError("bad Piper"))
-    @patch("codex_notifier.channels.voice.os.name", "nt")
+    @patch("codex_notifier.channels.voice.PLATFORM_NAME", "nt")
     def test_explicit_piper_failure_does_not_fallback_to_sapi(self, piper, sapi) -> None:
         with self.assertRaisesRegex(RuntimeError, "bad Piper"):
             voice.speak("hello", voice_config={"piper_executable": "piper"})
