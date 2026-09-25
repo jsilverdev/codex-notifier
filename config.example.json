@@ -3,6 +3,7 @@
     "enabled": false,
     "minimum_seconds": 300,
     "notify_when_duration_unknown": false,
+    "include_summary": true,
     "summary_max_chars": 1800,
     "summary_tail_chars": 600,
     "webhook_url": ""
@@ -11,6 +12,7 @@
     "enabled": false,
     "minimum_seconds": 300,
     "notify_when_duration_unknown": false,
+    "include_summary": true,
     "summary_max_chars": 1800,
     "webhook_url": ""
   },

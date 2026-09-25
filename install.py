@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence
 
+from codex_notifier.files import atomic_copy, atomic_write_text
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 NOTIFIER_PATH = PROJECT_ROOT / "notifier.py"
@@ -136,26 +138,82 @@ def _backup(path: Path, timestamp: str) -> Path:
     return backup
 
 
+def _strip_toml_comment(line: str) -> str:
+    """Return the part before an unquoted TOML comment marker."""
+    quote = ""
+    escaped = False
+    for index, character in enumerate(line):
+        if quote == '"' and escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {'"', "'"}:
+            if not quote:
+                quote = character
+            elif quote == character:
+                quote = ""
+        elif character == "#" and not quote:
+            return line[:index]
+    return line
+
+
+def _is_toml_table_header(line: str) -> bool:
+    return _strip_toml_comment(line).strip().startswith("[")
+
+
+def _inline_comment(line: str) -> str:
+    content = line.rstrip("\r\n")
+    stripped = _strip_toml_comment(content)
+    return content[len(stripped.rstrip()):]
+
+
+def update_root_notify(existing: str, notify_line: str) -> str:
+    """Update only a bare root-level ``notify`` before the first TOML table."""
+    lines = existing.splitlines(keepends=True)
+    first_table = next((index for index, line in enumerate(lines) if _is_toml_table_header(line)), len(lines))
+    root_index = next(
+        (index for index, line in enumerate(lines[:first_table])
+         if re.match(r"^[ \t]*notify[ \t]*=", _strip_toml_comment(line))),
+        None,
+    )
+    if root_index is not None:
+        original = lines[root_index]
+        ending = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
+        lines[root_index] = notify_line + _inline_comment(original) + ending
+        return "".join(lines)
+
+    newline = "\r\n" if "\r\n" in existing else "\n"
+    insertion = notify_line + newline
+    if first_table < len(lines):
+        lines.insert(first_table, insertion)
+        return "".join(lines)
+    return insertion + existing
+
+
 def update_codex_config(
     config_path: Path,
     python_command: Sequence[str],
     notifier_path: Path,
     *,
     timestamp: str,
+    platform_name: str | None = None,
 ) -> tuple[bool, Path | None]:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     notify_arguments = [*python_command, str(notifier_path), "notify"]
     notify_line = "notify = " + json.dumps(notify_arguments, ensure_ascii=False)
-    pattern = re.compile(r"^[ \t]*notify[ \t]*=.*$", re.MULTILINE)
-    if pattern.search(existing):
-        updated = pattern.sub(lambda _: notify_line, existing, count=1)
-    else:
-        updated = notify_line + os.linesep + existing
+    updated = update_root_notify(existing, notify_line)
     if updated == existing:
         return False, None
     backup = _backup(config_path, timestamp) if config_path.exists() else None
-    config_path.write_text(updated, encoding="utf-8", newline="")
+    atomic_write_text(
+        config_path,
+        updated,
+        mode=0o600,
+        platform_name=os.name if platform_name is None else platform_name,
+    )
     return True, backup
 
 
@@ -226,7 +284,7 @@ def update_hooks(
     if updated == existing:
         return False, None
     backup = _backup(hooks_path, timestamp) if hooks_path.exists() else None
-    hooks_path.write_text(updated, encoding="utf-8", newline="")
+    atomic_write_text(hooks_path, updated, mode=0o600, platform_name=platform_name)
     return True, backup
 
 
@@ -242,9 +300,7 @@ def install_local_config(
         return False, None
     destination.parent.mkdir(parents=True, exist_ok=True)
     backup = _backup(destination, timestamp) if destination.exists() else None
-    shutil.copyfile(example_path, destination)
-    if platform_name != "nt":
-        destination.chmod(0o600)
+    atomic_copy(example_path, destination, mode=0o600, platform_name=platform_name)
     return True, backup
 
 
@@ -266,6 +322,7 @@ def install(
         python_command,
         notifier_path,
         timestamp=stamp,
+        platform_name=platform,
     )
     hooks_changed, hooks_backup = update_hooks(
         codex_home / "hooks.json",
